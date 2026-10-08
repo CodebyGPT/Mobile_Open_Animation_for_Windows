@@ -1,0 +1,15 @@
+﻿# the portable toolchain: large, reproducible, never versioned
+.toolchain/
+# build output
+**/bin/
+**/obj/
+# per-build archives (binaries; the source each one holds is the point, but they are large)
+versions/
+# runtime droppings
+*.log
+*.error.log
+
+# scratch from the toolchain proof and the browser probe
+.cscprobe/
+probe/chromeprofile*/
+

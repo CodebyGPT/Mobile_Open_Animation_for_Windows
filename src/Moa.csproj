@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- .NET Framework 4.8 ships as a component of Windows 10 (1903+) and Windows 11, so
+         the built .exe runs on those machines with nothing for the user to install. A
+         net8.0-windows build would require the .NET 8 desktop runtime (50-60 MB) first.
+         See src/Net48Compat.cs for the small set of APIs this costs us. -->
+    <TargetFramework>net48</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>MobileOpenAnimation</AssemblyName>
+    <RootNamespace>Moa</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DebugType>none</DebugType>
+    <!-- One build, and it carries every diagnostic. There is no logging symbol to define any more: what
+         used to be compiled out of one configuration and into another is now switched at run time by debug
+         mode, the entry in the tray menu, so the exe that is shipped is the exe that was tested and its log
+         can be turned on where it is running instead of by rebuilding it. See Log.cs for what that costs
+         and for the two call sites that do not pay it. -->
+    <!-- .NET Framework projects do not reference System.Drawing by default and we use it
+         for the per-pixel-alpha panel. (UseWindowsForms is deliberately off: we run our own
+         message loop and never touch WinForms.) -->
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+</Project>

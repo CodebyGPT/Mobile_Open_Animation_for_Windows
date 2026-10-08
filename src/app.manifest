@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="MobileOpenAnimation" />
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- Per-monitor DPI aware: the panel has to line up with the window it covers. -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+    </windowsSettings>
+  </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" /><!-- Win 10 / 11 -->
+    </application>
+  </compatibility>
+  <!-- requireAdministrator, deliberately. UIPI lets us touch only windows at our own or a lower
+       integrity level, so unelevated this program would not animate most modern applications at
+       all: it would look broken rather than limited. Windows therefore elevates before the
+       process starts, and declining the prompt means it does not start. Program.Run checks this
+       again as a belt to that braces, and the task registered at logon runs with highest
+       privileges so that the elevation costs no prompt. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security><requestedPrivileges>
+      <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+    </requestedPrivileges></security>
+  </trustInfo>
+</assembly>
