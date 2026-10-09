@@ -1,4 +1,4 @@
-﻿# the portable toolchain: large, reproducible, never versioned
+# the portable toolchain: large, reproducible, never versioned
 .toolchain/
 # build output
 **/bin/
@@ -13,3 +13,5 @@ versions/
 .cscprobe/
 probe/chromeprofile*/
 
+# the upstream snapshot downloaded for comparison: it belongs to that project, not this one
+new/

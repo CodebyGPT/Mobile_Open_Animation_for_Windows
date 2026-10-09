@@ -96,7 +96,7 @@ internal static class Program
             string tail;
             if (Log.On)
             {
-                string path = Path.Combine(AppContext.BaseDirectory, "MobileOpenAnimation.error.log");
+                string path = Log.ErrorPath;
                 File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss}] {where}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}");
                 tail = $"{Environment.NewLine}{Environment.NewLine}Written to:{Environment.NewLine}{path}";
             }
@@ -230,7 +230,7 @@ internal static class Program
                     Log.On = true;
                     Log.Start("debug mode enabled from the tray menu");
                     Log.Write($"pid={Native.GetCurrentProcessId()} lang={_s.Language} ini={Settings.IniPath}" +
-                              $" log={Path.Combine(AppContext.BaseDirectory, "MobileOpenAnimation.log")}");
+                              $" log={Log.Path}");
                     Log.Flush(force: true);
                 }
                 else
@@ -279,7 +279,11 @@ internal static class Program
                 }
                 break;
             case MenuAbout:
+                // The version comes first because it is the thing most often wanted from this box: which build
+                // am I running. Everything AGPL-3.0 section 0 asks an interactive interface to show is below
+                // it, and the ini path is the one other thing people look here for.
                 Native.MessageBoxW(IntPtr.Zero,
+                    Strings.T("Version") + ": " + Build.Version + "\n\n" +
                     Strings.T("AboutText") + "\n\n" + Settings.IniPath,
                     Strings.T("About"), 0x00000040 /* MB_ICONINFORMATION */);
                 break;

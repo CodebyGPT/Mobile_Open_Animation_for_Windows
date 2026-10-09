@@ -38,8 +38,20 @@ internal static class Log
 
     private static readonly object Gate = new();
     private static readonly List<string> Buffer = new();
-    private static readonly string Path =
-        System.IO.Path.Combine(AppContext.BaseDirectory, "MobileOpenAnimation.log");
+    /// <summary>
+    /// This build's log, named after the build: a log can then be matched to the executable that wrote it
+    /// without being opened, and a new build does not overwrite the log of the build whose fault is still
+    /// being looked for.
+    /// </summary>
+    public static readonly string Path = System.IO.Path.Combine(AppContext.BaseDirectory,
+        $"MobileOpenAnimation-{Build.Version}.log");
+
+    /// <summary>
+    /// The same name, for the file a fatal error is reported into. Same reasoning: such a report is worth
+    /// more when it says which build produced it.
+    /// </summary>
+    public static readonly string ErrorPath = System.IO.Path.Combine(AppContext.BaseDirectory,
+        $"MobileOpenAnimation-{Build.Version}.error.log");
 
     private static long _lastFlush;
 
@@ -61,7 +73,8 @@ internal static class Log
     {
         if (!On) return;
         lock (Gate)
-            Buffer.Add($"{Environment.NewLine}===== {DateTime.Now:yyyy-MM-dd HH:mm:ss} {header} =====");
+            Buffer.Add($"{Environment.NewLine}===== {DateTime.Now:yyyy-MM-dd HH:mm:ss} {header}, " +
+                       $"build {Build.Version} =====");
     }
 
     /// <summary>Called from the animation tick. At most four writes a second, off the hot path.</summary>

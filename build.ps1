@@ -24,7 +24,12 @@
 [CmdletBinding()]
 param(
     [switch]$Run,
-    [string]$Project = 'src\Moa.csproj'
+    [string]$Project = 'src\Moa.csproj',
+    # The commit this build should claim, for the case where git cannot be asked - a source zip, or git not
+    # installed. Given it is used as it stands; left out, the script asks when there is someone to ask. A
+    # build that is going to be published passes it with the id it will be published as, because the public
+    # repository's history is not this one's and the id has to name something its readers can look up.
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,7 +86,49 @@ if (Test-Path $exe) {
 Write-Host "SDK    : $(& $dn --version)" -ForegroundColor DarkGray
 Write-Host "project: $Project ($Configuration)" -ForegroundColor DarkGray
 
-& $dn build $proj -c $Configuration --nologo
+# The identity the program reports about itself, which it reads back out of the assembly (Build.cs), so that
+# nothing in the source has to be kept in step with it.
+#
+# Local time, the clock the log's own timestamps use. The commit is short because the whole thing ends up in a
+# file name. A tree with changes in it gets -dirty, because a build from such a tree is not the commit it
+# names and a version that quietly claims otherwise is worse than none; untracked files are not counted, since
+# the ones that live here sit outside the compiled directory and would mark every build dirty for nothing.
+$stamp  = Get-Date -Format 'yyyy.MM.dd-HHmm'
+$commit = ''
+
+if ($Commit) { $commit = $Commit }
+elseif (Test-Path (Join-Path $root '.git')) {
+    $short = & git -C $root rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $short) {
+        $commit = $short.Trim()
+        if (& git -C $root status --porcelain --untracked-files=no 2>$null) { $commit += '-dirty' }
+    }
+}
+
+if (-not $commit) {
+    # No git to ask. Better to ask the person running the build than to write a version that names nothing:
+    # the whole point of the number is to say which source produced this exe.
+    #
+    # Asked only when there is a terminal to ask on. A redirected stdin means a script or a service is driving
+    # the build, and a prompt there would hang it rather than inform anyone.
+    if ([Console]::IsInputRedirected) {
+        Write-Host "note   : no git here, so this build's version will say nogit." -ForegroundColor Yellow
+        Write-Host "         Pass -Commit <id> to name it yourself." -ForegroundColor Yellow
+        $commit = 'nogit'
+    }
+    else {
+        Write-Host "note   : no git commit could be read here." -ForegroundColor Yellow
+        $manual = Read-Host "         commit id for this build (Enter to leave it as nogit)"
+        # Kept to characters that are safe in a file name and in the command line it is passed on.
+        $clean = ($manual -replace '[^A-Za-z0-9._-]', '-').Trim('-')
+        $commit = if ($clean) { $clean } else { 'nogit' }
+    }
+}
+
+$version = "$stamp-$commit"
+Write-Host "version: $version" -ForegroundColor DarkGray
+
+& $dn build $proj -c $Configuration --nologo "-p:InformationalVersion=$version" "-p:Version=$(Get-Date -Format 'yyyy.M.d')"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($Run) {

@@ -23,6 +23,16 @@
          for the per-pixel-alpha panel. (UseWindowsForms is deliberately off: we run our own
          message loop and never touch WinForms.) -->
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- What Build.cs reads, and what About, the ini's first line and the log's file name all show. build.ps1
+         overrides it with the moment of the build and the commit it came from; this value is what a build that
+         did not go through that script gets, and "unknown" says exactly that rather than showing a version
+         that describes some other executable. -->
+    <InformationalVersion>unknown</InformationalVersion>
+    <!-- The SDK appends the full 40-character revision to the informational version by default, as SemVer
+         build metadata. That would be a second, longer commit id riding along behind the short one, and it
+         ends up in a log file's name, so it is turned off: what identifies this build is the stamp and the
+         short commit that build.ps1 passes in. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Drawing" />

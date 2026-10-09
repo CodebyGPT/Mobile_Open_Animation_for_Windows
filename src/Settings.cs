@@ -141,7 +141,9 @@ internal sealed class Settings
     public void Save()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("; Mobile Open Animation for Windows - window open animation, standalone");
+        // The build identity on the first line, because the first thing anyone does with a settings file from
+        // someone else's machine is ask which build wrote it, and it is also what the log's file name says.
+        sb.AppendLine($"; Mobile Open Animation for Windows {Build.Version} - window open animation, standalone");
         sb.AppendLine("; The tray menu edits the entries marked [menu]; edit the rest here.");
         sb.AppendLine("; NOTE: Start with Windows is deliberately NOT stored in this file. The state is");
         sb.AppendLine("; whether the scheduled task exists, read from the Task Scheduler, and a copy here");
@@ -171,11 +173,12 @@ internal sealed class Settings
         sb.AppendLine("; also needs the opening animation to have really played, the display's shape and");
         sb.AppendLine("; the window's DPI to be unchanged, and the launch point to still be visible.");
         sb.AppendLine($"ReturnToOrigin={(ReturnToOrigin ? 1 : 0)}");
-        sb.AppendLine("; [menu] Debug mode > Enable. Off by default. On, the program writes");
-        sb.AppendLine("; MobileOpenAnimation.log next to the exe; off, it writes no log at all - no file");
-        sb.AppendLine("; is created and nothing is buffered. It exists as a setting rather than a switch");
-        sb.AppendLine("; because the runs worth diagnosing start with Windows, where nobody is around to");
-        sb.AppendLine("; pass one.");
+        sb.AppendLine("; [menu] Debug mode > Enable. Off by default. On, the program writes a log next");
+        sb.AppendLine("; to the exe whose name carries this build's identity - MobileOpenAnimation-");
+        sb.AppendLine("; <build>.log, so that a log belongs to the exe that wrote it; off, it writes no log");
+        sb.AppendLine("; at all - no file is created and nothing is buffered. It exists as a setting rather");
+        sb.AppendLine("; than a switch because the runs worth diagnosing start with Windows, where nobody is");
+        sb.AppendLine("; around to pass one.");
         sb.AppendLine($"DebugMode={(DebugMode ? 1 : 0)}");
         sb.AppendLine();
         sb.AppendLine("[animation]");
@@ -268,6 +271,7 @@ internal static class Strings
              "否则 Windows 的用户界面特权隔离(UIPI)会阻止它隐藏大多数程序的窗口，\n" +
              "动画将完全不会生效。"),
         ["About"]        = ("About", "关于"),
+        ["Version"]      = ("Version", "版本"),
         ["Exit"]         = ("Exit", "退出"),
         // The About text is not decoration: AGPL-3.0 section 0 requires an interactive interface
         // to show appropriate legal notices - a copyright notice, a statement that there is no
