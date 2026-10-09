@@ -132,6 +132,25 @@ internal sealed class Animator
     private readonly Dictionary<IntPtr, uint> _hideCompletedTick = new();
 
     /// <summary>
+    /// Show events that arrived before their window's hide had finished, keyed by hwnd.
+    ///
+    /// The judgement about a late animation needs two moments: when Windows raised the show event, and when
+    /// the hide completed. The show event can be delivered first - and the later our hide is, the likelier
+    /// that order is, which is exactly the case the judgement exists for. Without this table the lookup in
+    /// OnWindowShown found nothing and the function returned without a word: no measurement, no cancel, and
+    /// no line in the log, so the animation played over a window the user had already seen and nothing
+    /// anywhere said why. Kept until the hide finishes, which is where it is now judged.
+    /// </summary>
+    private readonly Dictionary<IntPtr, uint> _shownBeforeHide = new();
+
+    /// <summary>
+    /// How old a remembered show event may be and still be used. The two moments it compares are milliseconds
+    /// apart in every real case; anything much older belongs to a window that has gone and whose handle has
+    /// been reused, and judging with it would refuse an animation that was never late.
+    /// </summary>
+    private const int ShowBeforeHideMaxAgeMs = 2000;
+
+    /// <summary>
     /// Where each open window came from, keyed by hwnd, for the closing animation. See Origin.
     /// </summary>
     private readonly Dictionary<IntPtr, Origin> _origins = new();
@@ -346,7 +365,16 @@ internal sealed class Animator
             break;
         }
 
-        if (!_hideCompletedTick.TryGetValue(hwnd, out uint hiddenAt)) return;
+        if (!_hideCompletedTick.TryGetValue(hwnd, out uint hiddenAt))
+        {
+            // The show event beat the hide, so there is nothing to compare it with yet. Its moment is kept and
+            // judged as soon as the hide finishes, which is the branch in OnWindowCreated; dropping it here,
+            // which is what this used to do, left an animation to play over a window the user had already
+            // seen and left no line in the log to say so.
+            if (_shownBeforeHide.Count > 128) _shownBeforeHide.Clear();
+            _shownBeforeHide[hwnd] = eventTime;
+            return;
+        }
         _hideCompletedTick.Remove(hwnd);
 
         // Unsigned subtraction, so this stays correct when the 32-bit tick count wraps.
@@ -714,7 +742,35 @@ internal sealed class Animator
         // Bounded: a window whose show event never arrives is forgotten once this grows, which
         // can only cost us the chance to cancel, never hide anything from the user.
         if (_hideCompletedTick.Count > 128) _hideCompletedTick.Clear();
-        _hideCompletedTick[w.Hwnd] = unchecked((uint)Environment.TickCount);
+        uint hiddenAt = unchecked((uint)Environment.TickCount);
+        _hideCompletedTick[w.Hwnd] = hiddenAt;
+
+        // If this window's show event arrived before the hide finished, it could not be judged at the time -
+        // there was nothing to compare it with - so it was kept until now, when there is. Judged here rather
+        // than left to the animation, because at this point nothing has been created yet: a window the user
+        // has already seen costs nothing at all, where cancelling later costs a panel that exists for a
+        // millisecond and has to be taken apart again.
+        if (_shownBeforeHide.TryGetValue(w.Hwnd, out uint shownAt))
+        {
+            _shownBeforeHide.Remove(w.Hwnd);
+            int earlyMs = unchecked((int)(hiddenAt - shownAt));
+            if (earlyMs >= 0 && earlyMs <= ShowBeforeHideMaxAgeMs)
+            {
+                if (earlyMs > VisibleForTooLongMs)
+                {
+                    Log.Write($"hwnd={w.Hwnd} showed {earlyMs} ms before the hide finished, and its show " +
+                              $"event came first (limit {VisibleForTooLongMs} ms); not animating at all");
+                    // This window is not going to be animated, so there is nothing left to judge about it.
+                    // Clearing it here keeps a later show event - the window being minimized and restored,
+                    // say - from measuring itself against this hide and reaching a conclusion about an
+                    // animation that does not exist.
+                    _hideCompletedTick.Remove(w.Hwnd);
+                    return;
+                }
+                Log.Write($"hwnd={w.Hwnd} showed {earlyMs} ms before the hide finished, its show event " +
+                          $"having come first; in time");
+            }
+        }
 
         // What the window actually looks like at the moment we are about to draw over it, and how
         // the two rects differ. The MMC case showed a 260 ms hide with no cancellation, and none of
