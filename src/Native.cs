@@ -331,6 +331,42 @@ internal static class Native
 
     public delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
 
+    // ---- low-level keyboard hook, used only to learn where the user pressed Enter -------------
+    public const int WH_KEYBOARD_LL = 13;
+    public const uint WM_KEYDOWN = 0x0100, WM_SYSKEYDOWN = 0x0104;
+
+    /// <summary>
+    /// The Enter key, main and numeric keypad both: the keypad's arrives as this virtual key with the
+    /// extended flag set, so the one value is enough. See KeyTracker.Callback.
+    /// </summary>
+    public const uint VK_RETURN = 0x0D;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint VkCode, ScanCode, Flags, Time; public IntPtr ExtraInfo;
+    }
+
+    /// <summary>
+    /// The foreground thread's own state, of which only the focused control is used. It is worth more than
+    /// the foreground window for this purpose - see KeyTracker for why - and cbSize must be set before the
+    /// call, which is why the field is named as the API names it.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct GUITHREADINFO
+    {
+        public uint CbSize, Flags;
+        public IntPtr HwndActive, HwndFocus, HwndCapture, HwndMenuOwner, HwndMoveSize, HwndCaret;
+        public RECT RcCaret;
+    }
+
+    /// <summary>A thread id of 0 means the foreground thread, which is the one being typed into.</summary>
+    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+
+    /// <summary>The shell's own window - the desktop, in practice - and through it the shell's process.</summary>
+    [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookExW(int id, HookProc proc, IntPtr hMod, uint threadId);
     [DllImport("user32.dll")]

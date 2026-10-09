@@ -210,13 +210,14 @@ internal sealed class Animator
     {
         Panel.RegisterClass();
         ClickTracker.Start();
+        KeyTracker.Start();
         _thread.Start(tickTarget);
         LogResources("at startup");
     }
 
     /// <summary>
-    /// Destroys every panel, stops the thread, and removes the mouse hook. The thread stop joins, so no
-    /// panel outlives it; the hook goes last, mirroring the order Start sets things up in.
+    /// Destroys every panel, stops the thread, and removes both input hooks. The thread stop joins, so no
+    /// panel outlives it; the hooks go last, mirroring the order Start sets things up in.
     /// </summary>
     public void Stop()
     {
@@ -224,6 +225,7 @@ internal sealed class Animator
         _thread.Stop();
         _active.Clear();
         ClickTracker.Stop();
+        KeyTracker.Stop();
     }
 
     /// <summary>
@@ -715,6 +717,8 @@ internal sealed class Animator
         bool recent = ClickTracker.HasRecentClick(ClickTracker.DefaultGraceMs);
         bool started = !recent && ClickTracker.LaunchedByClick(w.Pid);
         bool fromClick = recent || started;
+        // Only the in-place case gets the nudge below: the other two anchors are real points on the screen.
+        bool inPlace = false;
         if (fromClick)
         {
             pt = new POINT { X = ClickTracker.LastX, Y = ClickTracker.LastY };
@@ -722,14 +726,23 @@ internal sealed class Animator
                       (started ? $" (this click started pid {w.Pid})" : "") +
                       $" on {ClickTracker.DescribeLastSurface()}");
         }
+        else if (KeyTracker.TryAnchor(w.Pid, out pt))
+        {
+            // Nothing was clicked, so the user started this with the keyboard. The point is the middle of the
+            // control that had the focus when they pressed Enter - see KeyTracker for which places count and
+            // why nothing else does. Deliberately not remembered as an origin: the return animation is for the
+            // two surfaces that are still there when the window closes, and a key press was on neither.
+            Log.Write($"  -> anchor: keyboard, Enter on {KeyTracker.LastSource} at {pt.X},{pt.Y}");
+        }
         else
         {
+            inPlace = true;
             pt = new POINT
             {
                 X = w.X + w.Width / 2 - _s.StartSizePx / 2,
                 Y = w.Y + w.Height / 2 - _s.StartSizePx / 2,
             };
-            Log.Write($"  -> anchor: no recent click, growing in place at {pt.X},{pt.Y}");
+            Log.Write($"  -> anchor: nothing to grow from ({KeyTracker.LastReason}); in place at {pt.X},{pt.Y}");
         }
 
         if (!_guard.Hide(w.Hwnd)) { Log.Write("  -> Hide() declined; nothing animated"); return; }
@@ -793,9 +806,9 @@ internal sealed class Animator
         // The anchor was worked out before the hide, and there is no room for a DPI query there -
         // that is the path where a stalled millisecond costs a window. In the in-place case the
         // anchor is the *top-left* of the start square, so it was placed using the unscaled size and
-        // has to be nudged by half the difference to stay centred on the window. The click case
-        // needs no nudge: there the anchor is the point that was clicked.
-        if (!fromClick)
+        // has to be nudged by half the difference to stay centred on the window. The click and
+        // keyboard cases need no nudge: there the anchor is a point that was on the screen.
+        if (inPlace)
         {
             int nudge = (startSize - _s.StartSizePx) / 2;
             pt = new POINT { X = pt.X - nudge, Y = pt.Y - nudge };

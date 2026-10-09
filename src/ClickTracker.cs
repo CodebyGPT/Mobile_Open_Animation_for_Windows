@@ -103,8 +103,14 @@ internal static class ClickTracker
         return lag >= 0 && lag <= LaunchGraceMs;
     }
 
-    /// <summary>Milliseconds since the process was created, or -1 when it cannot be read.</summary>
-    private static long ProcessAgeMs(uint pid)
+    /// <summary>
+    /// Milliseconds since the process was created, or -1 when it cannot be read.
+    ///
+    /// Shared with KeyTracker: "was this process created just after the activation" is the same question for
+    /// a click and for a key press, and the answer is the only thing that tells a launch from a window that
+    /// opened by itself.
+    /// </summary>
+    internal static long ProcessAgeMs(uint pid)
     {
         IntPtr h = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return -1;
