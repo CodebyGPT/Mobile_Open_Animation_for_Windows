@@ -376,6 +376,16 @@ internal static class Native
     /// <summary>The shell's own window - the desktop, in practice - and through it the shell's process.</summary>
     [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
 
+    // ---- the two rectangle passes whose cost is the card's area, done at the C runtime's speed ----------
+    // A loop of stores, one pixel at a time, measured an order of magnitude slower than the same work done by
+    // memset, and these are the two passes that still scale with the card: clearing what is about to be drawn,
+    // and writing the opaque background into it. Byte counts, as the C functions take them.
+    [DllImport("msvcrt.dll", EntryPoint = "memset", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr Memset(IntPtr dest, int value, IntPtr count);
+
+    [DllImport("msvcrt.dll", EntryPoint = "memcpy", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr Memcpy(IntPtr dest, IntPtr src, IntPtr count);
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookExW(int id, HookProc proc, IntPtr hMod, uint threadId);
     [DllImport("user32.dll")]

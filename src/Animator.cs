@@ -1217,6 +1217,35 @@ internal sealed class Panel
     private Bitmap? _iconDraw;
     private int _iconMaxPx = 128;
 
+    /// <summary>
+    /// The drawing objects the frame is drawn with, kept for the panel's life instead of built per frame.
+    ///
+    /// The colours and the border are resolved once, when the panel is created, and cannot change while it
+    /// exists, so a brush and a pen that are made once are the same brush and pen for every frame. The
+    /// Graphics is tied to the surface's device context, so it is made with the surface and released with it.
+    /// Building all three for each frame was work that did not depend on the card at all, which is exactly
+    /// the kind of cost that shows up as a frame rate that no longer reaches the display's.
+    /// </summary>
+    private Graphics? _g;
+    private SolidBrush? _bgBrush;
+    private Pen? _borderPen;
+
+    /// <summary>
+    /// One row of the background colour, in the form the surface wants: premultiplied.
+    ///
+    /// The card's background is opaque, so its premultiplied form is the colour with full alpha - a run of
+    /// identical pixels, which memcpy writes at a speed no per-pixel loop and no GDI+ fill comes near. This
+    /// is the row that gets copied, re-filled when the frame grows and therefore when the row gets longer.
+    /// </summary>
+    private uint[]? _fillRow;
+    private int _fillRowLength;
+
+    /// <summary>
+    /// Pixels this frame touched, and of those the ones GDI+ drew. Read by the debug log to say whether the
+    /// work has come loose from the card's area, which is the thing these passes were changed for.
+    /// </summary>
+    public long LastPixels, LastAaPixels;
+
     // The bitmap and device context of the last card drawn, kept so that a frame which only changes the
     // opacity does not have to draw it again. Freed in ReleaseSurface, which Destroy calls.
     private IntPtr _dib = IntPtr.Zero, _memDc = IntPtr.Zero, _oldBitmap = IntPtr.Zero;
@@ -1384,6 +1413,8 @@ internal sealed class Panel
         _iconBitmap = null;
         _iconDraw?.Dispose();
         _iconDraw = null;
+        _bgBrush?.Dispose(); _bgBrush = null;
+        _borderPen?.Dispose(); _borderPen = null;
         ReleaseSurface();
     }
 
@@ -1523,6 +1554,7 @@ internal sealed class Panel
         if (_surfaceReady && x == _drawnX && y == _drawnY &&
             w == _drawnW && h == _drawnH && radius == _drawnRadius)
         {
+            LastPixels = 0; LastAaPixels = 0;
             Present(x, y, w, h, alpha);
             return;
         }
@@ -1583,14 +1615,66 @@ internal sealed class Panel
 
         var scans = dirty.GetRegionScans(new Matrix());
         Zero(scans);
-        using (var g = Graphics.FromHdc(_memDc))
+
+        // Of all that, what GDI+ is actually needed for, and what can just be written: the card's own
+        // anti-aliased parts - its four corners, the band its border sits in, and the icon - are the only
+        // pixels where a colour has to be derived per pixel. Everything else in the dirty area is either
+        // inside the card, where the background is one opaque colour, or outside it, where it stays
+        // transparent. Those two are decided by the region arithmetic below rather than by drawing.
+        //
+        // Only the *card's* corners and edges count here, not the previous card's: where the two overlap the
+        // card has grown over them and its own interior is the right answer, and where they do not the
+        // previous card's edge is outside this one and has to be left transparent - which is why the fill is
+        // intersected with the card rather than with the dirty area.
+        // Built from a real rectangle rather than started empty, and the difference is not cosmetic: a Region
+        // made with no arguments is the *infinite* region in GDI+, not an empty one, so a region that begins
+        // that way and is then unioned with the card's corners is still everything - the fill below ends up
+        // with nothing to write and GDI+ quietly goes on drawing the whole interior, which is the cost this
+        // arrangement exists to remove. Verified headless: aa 900 pixels and fill 48896 for a card that grew
+        // from 200 to 300 against 50884 dirty, where the other spelling gave aa 50884 and fill 0.
+        var corners = CornerAreas(card, radius);
+        using var aa = new Region(Grow(corners[0]));
+        for (int i = 1; i < corners.Length; i++) aa.Union(Grow(corners[i]));
+        // Grown by a pixel as the same rectangles are when they go into the dirty region, and for the same
+        // reason: the fill below is everything the anti-aliased parts are not, and a region cannot express an
+        // anti-aliased edge, so the one pixel the rounding and the border fade into has to belong to GDI+.
+        foreach (var r in EdgeBands(card)) aa.Union(Grow(r));
+        UnionIcon(aa, card);
+        aa.Intersect(dirty);
+
+        using var fill = dirty.Clone();
+        fill.Intersect(card);
+        fill.Exclude(aa);
+        var fillScans = fill.GetRegionScans(new Matrix());
+        var aaScans = aa.GetRegionScans(new Matrix());
+        FillOpaque(fillScans);
+
+        var g = _g;
+        if (g is not null)
         {
-            g.SetClip(dirty, CombineMode.Replace);
+            g.SetClip(aa, CombineMode.Replace);
             DrawCard(g, card, radius);
         }
-        if (Log.On) tDraw = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (Log.On)
+        {
+            tDraw = System.Diagnostics.Stopwatch.GetTimestamp();
+            LastPixels = Area(scans);
+            LastAaPixels = Area(aaScans);
+            if (g is not null) CheckCoverage(g, dirty, fill, aa, card);
+            // The canary for a split that has quietly stopped working. A dirty area of a megapixel or more can
+            // only be a card that is much larger than the things GDI+ is kept for - the corner boxes at these
+            // radii are tens of thousands of pixels at most, the border bands a few thousand and the icon a
+            // few tens of thousands - so if GDI+ has most of a megapixel to itself, the straight fill is not
+            // writing what it should be. That is a mistake with no symptom in the picture: it looks right and
+            // costs what it used to.
+            if (LastPixels >= 1_000_000 && LastAaPixels * 4 > LastPixels)
+                Log.Write($"panel split: GDI+ is drawing {LastAaPixels / 1000}K of {LastPixels / 1000}K dirty" +
+                          $" pixels; the straight fill is not doing its share");
+        }
 
-        Premultiply(scans);
+        // Only those pixels: the background was written premultiplied, so the rest of the dirty area is
+        // either already right or transparent, and neither needs the pass.
+        Premultiply(aaScans);
         if (Log.On) tPremul = System.Diagnostics.Stopwatch.GetTimestamp();
 
         _painted = true;
@@ -1614,6 +1698,10 @@ internal sealed class Panel
     /// </summary>
     private bool MakeSurface()
     {
+        // A Graphics from an earlier surface holds a device context that is about to be freed or has been:
+        // GrowFrame makes a new surface without going through ReleaseSurface, so this is the only place that
+        // can catch it, and a leaked Graphics is a leaked DC. See the note on _g for why it is cached at all.
+        _g?.Dispose(); _g = null;
         var bmi = new Native.BITMAPINFO
         {
             Header = new Native.BITMAPINFOHEADER
@@ -1638,6 +1726,7 @@ internal sealed class Panel
         IntPtr dc = Native.CreateCompatibleDC(IntPtr.Zero);
         _dib = dib; _memDc = dc; _oldBitmap = Native.SelectObject(dc, dib);
         _bits = bits; _stride = _frameW;
+        _g = Graphics.FromHdc(dc);
         _surfaceReady = true;
         return true;
     }
@@ -1658,12 +1747,10 @@ internal sealed class Panel
         int inset = (int)Math.Ceiling(borderWidth / 2f);
         using var path = RoundedRect(card.X + inset, card.Y + inset,
                                      card.Width - inset * 2, card.Height - inset * 2, r);
-        using var brush = new SolidBrush(_bg);
-        g.FillPath(brush, path);
+        g.FillPath(_bgBrush ??= new SolidBrush(_bg), path);
         if (_hasBorder)
         {
-            using var pen = new Pen(_borderColor, borderWidth);
-            g.DrawPath(pen, path);
+            g.DrawPath(_borderPen ??= new Pen(_borderColor, borderWidth), path);
         }
         var icon = _iconDraw ?? _iconBitmap;
         if (icon is null) return;
@@ -1816,6 +1903,18 @@ internal sealed class Panel
     }
 
     /// <summary>
+    /// Pixels in a set of scan rectangles, for the log. The number that says whether the work has come loose
+    /// from the card's area: a full frame reports the card's pixels, a frame that only grew the card by a ring
+    /// reports the ring's.
+    /// </summary>
+    private static long Area(RectangleF[] rects)
+    {
+        long total = 0;
+        foreach (var r in rects) total += (long)(Math.Max(0, Math.Round(r.Width)) * Math.Max(0, Math.Round(r.Height)));
+        return total;
+    }
+
+    /// <summary>
     /// Adds where the icon is drawn on a card, so that the previous frame's icon is painted over and this
     /// frame's is not clipped away.
     /// </summary>
@@ -1831,19 +1930,102 @@ internal sealed class Panel
     /// <summary>
     /// Writes transparent over a set of rectangles. Clear() would do the whole frame, and only these pixels
     /// are wrong: the ones a card of some earlier size covered and this one does not.
+    ///
+    /// memset rather than a store per pixel: this is one of the two passes whose cost is still the card's
+    /// area, and the C runtime writes the same bytes several times faster than a loop of C# stores does. A
+    /// band that spans the frame has its rows contiguous, so the whole band is one call.
     /// </summary>
     private unsafe void Zero(RectangleF[] rects)
     {
-        var p = (uint*)_bits;
+        var p = (byte*)_bits;
+        long rowBytes = (long)_stride * 4;
         foreach (var r in rects)
         {
             int x0 = Math.Max(0, (int)Math.Floor(r.Left)), x1 = Math.Min(_frameW, (int)Math.Ceiling(r.Right));
             int y0 = Math.Max(0, (int)Math.Floor(r.Top)), y1 = Math.Min(_frameH, (int)Math.Ceiling(r.Bottom));
-            if (x1 <= x0) continue;
+            if (x1 <= x0 || y1 <= y0) continue;
+            int bytes = (x1 - x0) * 4;
+            byte* at = p + y0 * rowBytes + x0 * 4;
+            if (x0 == 0 && x1 == _frameW)
+            {
+                Native.Memset((IntPtr)at, 0, (IntPtr)(rowBytes * (y1 - y0)));
+                continue;
+            }
             for (int y = y0; y < y1; y++)
             {
-                uint* row = p + (long)y * _stride + x0;
-                for (int x = 0, n = x1 - x0; x < n; x++) row[x] = 0;
+                Native.Memset((IntPtr)at, 0, (IntPtr)bytes);
+                at += rowBytes;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The invariant the split into "written straight in" and "drawn by GDI+" has to hold, checked rather
+    /// than trusted: every pixel of the dirty area that is inside the card is either filled or drawn, and the
+    /// fill never writes outside the card.
+    ///
+    /// A pixel that is neither keeps whatever colour it had - a seam across the card, or a ring of the old
+    /// card left behind while it shrinks - and that is the failure this arrangement can produce. It is a
+    /// geometry mistake, so it cannot be reasoned about from the timings and would otherwise only be found by
+    /// looking at the animation. Only while debug mode is on, which is what it is for.
+    /// </summary>
+    private static void CheckCoverage(Graphics g, Region dirty, Region fill, Region aa, Rectangle card)
+    {
+        using var covered = dirty.Clone();
+        covered.Exclude(fill);
+        covered.Exclude(aa);
+        using var inside = covered.Clone();
+        inside.Intersect(card);
+        if (!inside.IsEmpty(g))
+            Log.Write($"panel coverage: dirty pixels inside the card that neither the fill nor GDI+ covers," +
+                      $" at {inside.GetBounds(g)}");
+
+        using var outside = fill.Clone();
+        outside.Exclude(card);
+        if (!outside.IsEmpty(g))
+            Log.Write($"panel coverage: the fill writes outside the card, at {outside.GetBounds(g)}");
+    }
+
+    /// <summary>
+    /// Writes the card's background into a set of rectangles, already premultiplied.
+    ///
+    /// The interior of the card is one opaque colour, so those pixels are all the same value and a whole
+    /// rectangle can be written a row at a time from a row that was filled once, by memcpy. This is what
+    /// stands in for GDI+ filling the card's path and for the premultiply pass over it afterwards: the
+    /// background now costs the C runtime's copy per row and nothing per pixel that can be measured.
+    /// </summary>
+    private unsafe void FillOpaque(RectangleF[] rects)
+    {
+        if (rects.Length == 0 || _frameW <= 0) return;
+
+        if (_fillRow is null || _fillRow.Length < _frameW || _fillRowLength != _frameW)
+        {
+            _fillRow = new uint[_frameW];
+            // Premultiplied, and computed from whatever alpha the background really has so that a translucent
+            // one would come out premultiplied and correct rather than merely opaque and plausible.
+            int a = _bg.A;
+            uint v = (uint)((a << 24) | ((_bg.R * a / 255) << 16) | ((_bg.G * a / 255) << 8) | (_bg.B * a / 255));
+            for (int i = 0; i < _frameW; i++) _fillRow[i] = v;
+            _fillRowLength = _frameW;
+        }
+
+        fixed (uint* src = _fillRow)
+        {
+            var from = (IntPtr)src;
+            var p = (byte*)_bits;
+            long rowBytes = (long)_stride * 4;
+            foreach (var r in rects)
+            {
+                int x0 = Math.Max(0, (int)Math.Floor(r.Left)), x1 = Math.Min(_frameW, (int)Math.Ceiling(r.Right));
+                int y0 = Math.Max(0, (int)Math.Floor(r.Top)), y1 = Math.Min(_frameH, (int)Math.Ceiling(r.Bottom));
+                if (x1 <= x0 || y1 <= y0) continue;
+                int bytes = (x1 - x0) * 4;
+                byte* at = p + y0 * rowBytes + x0 * 4;
+                for (int y = y0; y < y1; y++)
+                {
+                    Native.Memcpy((IntPtr)at, from, (IntPtr)bytes);
+                    at += rowBytes;
+                }
             }
         }
     }
@@ -1892,7 +2074,8 @@ internal sealed class Panel
                 Log.Write($"frame {w}x{h} ({w * (long)h / 1000} Kpx):" +
                           $" alloc+dc={Ms(tStart, tAlloc):F2} draw={Ms(tAlloc, tDraw):F2}" +
                           $" premul={Ms(tDraw, tPremul):F2} update={Ms(tPremul, tAfter):F2}" +
-                          $" total={Ms(tStart, tAfter):F2} ms alpha={alpha}");
+                          $" total={Ms(tStart, tAfter):F2} ms alpha={alpha}" +
+                          $" px={LastPixels / 1000}K aa={LastAaPixels / 1000}K");
             }
         }
     }
@@ -1900,6 +2083,8 @@ internal sealed class Panel
     /// <summary>Frees the cached bitmap and device context, if there are any.</summary>
     private void ReleaseSurface()
     {
+        // Before the surface it draws into: a Graphics holds the device context it was made from.
+        _g?.Dispose(); _g = null;
         FreeSurface(_dib, _memDc, _oldBitmap);
         _dib = IntPtr.Zero; _memDc = IntPtr.Zero; _oldBitmap = IntPtr.Zero;
         _bits = IntPtr.Zero; _stride = 0;

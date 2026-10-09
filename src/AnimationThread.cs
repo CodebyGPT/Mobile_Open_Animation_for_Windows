@@ -102,7 +102,7 @@ internal sealed class AnimationThread
         /// Updated only while debug mode is on, by the two places that add to them and read by the one
         /// place that reports them; nothing else touches them.
         /// </summary>
-        public long ShowTicks, GapTicks, LastDrawEnd;
+        public long ShowTicks, GapTicks, LastDrawEnd, DrawnPixels, AaPixels;
         public int Gaps;
 
         // The most recent frame asked for. One deep by design: see the note above.
@@ -337,7 +337,9 @@ internal sealed class AnimationThread
                                 double freq = System.Diagnostics.Stopwatch.Frequency;
                                 Log.Write($"  of which: draw={(it.ShowTicks / freq * 1000.0 / it.Frames):F2} ms/frame," +
                                           $" gap={(it.GapTicks / freq * 1000.0 / it.Gaps):F2} ms/frame" +
-                                          $" (display frame is {_frameMs:F2} ms)");
+                                          $" (display frame is {_frameMs:F2} ms)," +
+                                          $" {it.DrawnPixels / 1000 / Math.Max(1, it.Frames)} Kpx/frame of which" +
+                                          $" GDI+ {it.AaPixels / 1000 / Math.Max(1, it.Frames)} Kpx");
                             }
                         }
                         it.Panel.Destroy();
@@ -362,6 +364,8 @@ internal sealed class AnimationThread
                             {
                                 tFirst1 = System.Diagnostics.Stopwatch.GetTimestamp();
                                 it.ShowTicks += tFirst1 - tFirst0;
+                                it.DrawnPixels += it.Panel.LastPixels;
+                                it.AaPixels += it.Panel.LastAaPixels;
                                 if (it.LastDrawEnd != 0) { it.GapTicks += tFirst0 - it.LastDrawEnd; it.Gaps++; }
                                 it.LastDrawEnd = tFirst1;
                             }
@@ -387,6 +391,8 @@ internal sealed class AnimationThread
                         {
                             tDrawn1 = System.Diagnostics.Stopwatch.GetTimestamp();
                             it.ShowTicks += tDrawn1 - tDrawn0;
+                            it.DrawnPixels += it.Panel.LastPixels;
+                            it.AaPixels += it.Panel.LastAaPixels;
                             if (it.LastDrawEnd != 0) { it.GapTicks += tDrawn0 - it.LastDrawEnd; it.Gaps++; }
                             it.LastDrawEnd = tDrawn1;
                             drew++;
