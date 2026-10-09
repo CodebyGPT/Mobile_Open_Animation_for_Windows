@@ -659,7 +659,7 @@ internal sealed class Animator
         // with the panel instead of waiting for a tick and then a flush. That wait is about 16 ms,
         // one frame, and it is the seam between the window vanishing and the panel appearing.
         var first = new AnimationThread.FirstFrame(rect.Left, rect.Top, rw, rh, 255, targetRadius);
-        var panel = _thread.Attach(w, endSize, endRadius, rect.Left, rect.Top, first);
+        var panel = _thread.Attach(w, endSize, endRadius, rect.Left, rect.Top, endX, endY, endSize, first);
 
         Log.Write($"hwnd={w.Hwnd} closing: {rw}x{rh} at {rect.Left},{rect.Top} -> {endSize}px {dest}" +
                   $" radius {targetRadius}->{endRadius}");
@@ -833,7 +833,7 @@ internal sealed class Animator
         // The panel window is created on the animation thread, not here. This thread only asks for
         // it and gets straight on with the next event; if creation fails, Panel.Failed is set and
         // Tick releases the window through the normal path.
-        var panel = _thread.Attach(w, startSize, startRadius, pt.X, pt.Y);
+        var panel = _thread.Attach(w, startSize, startRadius, pt.X, pt.Y, 0, 0, 0);
         Log.Write($"  -> panel requested, from {pt.X},{pt.Y} size {startSize} radius {startRadius}->{targetRadius} (dpi {dpi}, setting {_s.StartSizePx})");
 
         _active.Add(new Anim
@@ -1168,12 +1168,47 @@ internal sealed class Panel
     // The bitmap and device context of the last card drawn, kept so that a frame which only changes the
     // opacity does not have to draw it again. Freed in ReleaseSurface, which Destroy calls.
     private IntPtr _dib = IntPtr.Zero, _memDc = IntPtr.Zero, _oldBitmap = IntPtr.Zero;
+    /// <summary>
+    /// The surface's pixels and its width in pixels. The width is the stride, and it is the *frame's* width
+    /// rather than the card's: the card is a rectangle inside the frame, so a row of the surface is longer
+    /// than a row of the card and every pass over it has to be told which rectangle it is working on.
+    /// </summary>
+    private IntPtr _bits;
+    private int _stride;
     private bool _surfaceReady;
     private int _drawnW, _drawnH, _drawnRadius;
     private Color _bg;
     private Color _borderColor;
     private bool _hasBorder;
     private int _frames;
+
+    // ---- the frame of reference the card is drawn in ------------------------------------------------
+    //
+    // The surface is allocated once, at the size of the rectangle the animation's frames can occupy, and
+    // every frame is drawn into it in the same coordinate system: the card moves and grows *inside* that
+    // frame, and UpdateLayeredWindow is handed the part of it the current card occupies.
+    //
+    // That is what makes a frame cheap. Drawing the card from scratch costs its whole area - a GDI+ fill, a
+    // premultiply pass and an upload of the same pixels - and the area is at its largest exactly when the
+    // animation covers most of the screen. With the frame fixed, the pixels drawn last frame are still
+    // there and still correct, so only the ring between last frame's card and this one has changed, and the
+    // work of a frame follows the perimeter instead of the area. It is what the Windhawk mod does: its
+    // render surface is the final size at 1:1 while each frame fills only fw by fh from the top left, and
+    // it remembers drawnW/drawnH/drawnRadius/drawnIcon to know what has to be filled again.
+    //
+    // Screen coordinates, because that is the space the frames arrive in; a frame's own rectangle is
+    // derived from them. Everything outside the frame would be clipped away.
+    private int _frameX, _frameY, _frameW, _frameH;
+    private int _drawnX, _drawnY;      // where the last card actually was, in screen coordinates
+    private bool _painted;             // whether the surface holds a card at all
+
+    /// <summary>
+    /// The cap on a frame's own memory, now against the frame rather than the card. It was four megapixels,
+    /// which is smaller than 4K, so on a 4K display a maximised window drew no panel at all and the
+    /// animation silently did not appear; past this one a frame would be more than a hundred megabytes and
+    /// refusing is the lesser evil, but it says so instead of failing mute.
+    /// </summary>
+    private const long MaxFramePixels = 33_000_000;
 
     public static void RegisterClass()
     {
@@ -1197,9 +1232,47 @@ internal sealed class Panel
     /// </summary>
     public volatile bool Failed;
 
-    public bool Create(WindowInfo target, int startSize, int startRadius, int anchorX, int anchorY)
+    public bool Create(WindowInfo target, int startSize, int startRadius, int anchorX, int anchorY,
+                       int endX, int endY, int endSize)
     {
         if (!_registered) { Failed = true; return false; }
+
+        // The frame of reference for the whole animation: the union of where it starts and where it ends.
+        // An opening card travels from the start square to the window's rectangle and a closing one from
+        // the window's rectangle to the square it came from, so the two ends bound every frame in between
+        // and a surface of that size can be allocated once and kept.
+        _frameX = Math.Min(anchorX, target.X);
+        _frameY = Math.Min(anchorY, target.Y);
+        int right = Math.Max(anchorX + startSize, target.X + target.Width);
+        int bottom = Math.Max(anchorY + startSize, target.Y + target.Height);
+        if (endSize > 0)
+        {
+            _frameX = Math.Min(_frameX, endX);
+            _frameY = Math.Min(_frameY, endY);
+            right = Math.Max(right, endX + endSize);
+            bottom = Math.Max(bottom, endY + endSize);
+        }
+        _frameW = right - _frameX;
+        _frameH = bottom - _frameY;
+
+        // A small margin, because everything derived from a card is a pixel or two larger than its
+        // rectangle: the anti-aliased edge of every shape, and the regions built from those rectangles,
+        // which cannot express half a pixel. Without it a frame that fits the geometry exactly still fails
+        // the fit test below and is grown by that one pixel.
+        const int FrameMargin = 4;
+        _frameX -= FrameMargin;
+        _frameY -= FrameMargin;
+        _frameW += FrameMargin * 2;
+        _frameH += FrameMargin * 2;
+
+        if ((long)_frameW * _frameH > MaxFramePixels)
+        {
+            Log.Write($"panel refused: the animation's frame is {_frameW}x{_frameH}, past the " +
+                      $"{MaxFramePixels / 1_000_000} MP cap");
+            Failed = true;
+            return false;
+        }
+
         ResolveColorsCached(out _bg, out _borderColor, out _hasBorder);
 
         if (!string.IsNullOrEmpty(target.ExePath)) _iconBitmap = CachedIcon(target.ExePath);
@@ -1211,6 +1284,9 @@ internal sealed class Panel
         int iconDpi = (int)Native.GetDpiForWindow(target.Hwnd);
         if (iconDpi < 48 || iconDpi > 480) iconDpi = 96;
         _iconMaxPx = Native.MulDiv(128, iconDpi, 96);
+        // The border follows the display too, and is resolved here rather than per frame: it is one of the
+        // few things in the card that is measured in pixels rather than derived from the card's size.
+        _borderWidthPx = Math.Max(1f, BorderWidthLogical * iconDpi / 96f);
 
         if (_iconBitmap is not null && _iconMaxPx > 0)
         {
@@ -1373,14 +1449,9 @@ internal sealed class Panel
     {
         if (_hwnd == IntPtr.Zero || w <= 0 || h <= 0) return;
 
-        // A cap on the frame's own memory. It was four megapixels, which is smaller than 4K - so on a 4K
-        // display a maximised window drew no panel at all, silently, and the animation just did not
-        // appear. Thirty-three megapixels covers 8K; beyond that a frame would be more than a hundred
-        // megabytes and refusing is the lesser evil, but it says so now instead of failing mute.
-        const long MaxFramePixels = 33_000_000;
-        if ((long)w * h > MaxFramePixels)
+        if (_surfaceReady && (long)_frameW * _frameH > MaxFramePixels)
         {
-            Log.Write($"panel frame refused: {w}x{h} is past the {MaxFramePixels / 1_000_000} MP cap");
+            Log.Write($"panel frame refused: {_frameW}x{_frameH} is past the {MaxFramePixels / 1_000_000} MP cap");
             return;
         }
 
@@ -1393,103 +1464,335 @@ internal sealed class Panel
         // saving is, and it saves both halves: a frame not drawn is also a frame the compositor is not
         // handed.
         //
-        // Whether the same pixels would come out is a question about the rectangle and the corner
-        // radius alone: the colours are resolved once per panel, and the icon is pre-scaled once per
-        // panel. Position is not part of it, since the bitmap does not move - only where it is put.
-        if (_surfaceReady && w == _drawnW && h == _drawnH && radius == _drawnRadius)
+        // Position is part of the test now, where it used not to be. The surface is the whole frame the
+        // animation can occupy rather than the card itself, so a card that has only moved has moved
+        // *within* the surface and its pixels are in different places. Nothing else has to agree: the
+        // colours are resolved once per panel and the icon is pre-scaled once per panel.
+        if (_surfaceReady && x == _drawnX && y == _drawnY &&
+            w == _drawnW && h == _drawnH && radius == _drawnRadius)
         {
             Present(x, y, w, h, alpha);
             return;
         }
 
-        var bmi = new Native.BITMAPINFO
-        {
-            Header = new Native.BITMAPINFOHEADER
-            {
-                BiSize = (uint)Marshal.SizeOf<Native.BITMAPINFOHEADER>(),
-                BiWidth = w,
-                BiHeight = -h,                              // top-down
-                BiPlanes = 1,
-                BiBitCount = 32,
-                BiCompression = 0,                          // BI_RGB
-            }
-        };
-        // Stage timing, taken only while debug mode is on. A frame costs about five nanoseconds per
-        // pixel, measured, which puts the area budget for a 165 Hz display at roughly one megapixel:
-        // anything larger falls short of the refresh rate, and it does so in proportion to its area.
-        // This says which stage the time actually goes to, so that the next change can be aimed instead
-        // of guessed at. The stages a reused frame skips stay at zero, and those are only filled in
-        // while the numbers are being watched.
-        // tUpdate and the formatting helper live in Present, which is where the frame is handed over.
-        //
-        // The four locals are declared outside the test because the call to Present below passes them
-        // either way; with debug mode off they stay at zero, which is what Present's defaults are too.
+        // Stage timing, taken only while debug mode is on. A frame *used* to cost about five nanoseconds per
+        // pixel, measured, which put the area budget for a 165 Hz display at roughly one megapixel and made
+        // anything larger fall short of the refresh rate in proportion to its area. That is now the cost of
+        // a full frame only - the first of a panel, or the first after a resize - because the card is drawn
+        // again just where it has changed since the last frame. This says which stage the time goes to, so
+        // that the next change can be aimed rather than guessed at. The stages a reused frame skips stay at
+        // zero, and those are only filled in while the numbers are being watched. tUpdate and the formatting
+        // helper live in Present, which is where the frame is handed over.
         long tStart = 0, tAlloc = 0, tDraw = 0, tPremul = 0;
         if (Log.On) tStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        ReleaseSurface();
 
-        IntPtr screenDc = Native.GetDC(IntPtr.Zero);
-        if (screenDc == IntPtr.Zero) return;
-        IntPtr dib = Native.CreateDIBSection(screenDc, ref bmi, 0, out var bits, IntPtr.Zero, 0);
-        Native.ReleaseDC(IntPtr.Zero, screenDc);
-        if (dib == IntPtr.Zero || bits == IntPtr.Zero) return;
-
-        IntPtr dc = Native.CreateCompatibleDC(IntPtr.Zero);
-        IntPtr old = Native.SelectObject(dc, dib);
-        // Kept rather than freed at the end of the call, so that a frame which only changes the opacity
-        // can reuse it. Released in ReleaseSurface and in Destroy.
-        _dib = dib; _memDc = dc; _oldBitmap = old;
-        if (Log.On) tAlloc = System.Diagnostics.Stopwatch.GetTimestamp();
-        using (var g = Graphics.FromHdc(dc))
+        if (!_surfaceReady)
         {
-            g.Clear(Color.Transparent);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            int r = Compat.Clamp(radius, 0, Math.Min(w, h) / 2);
-            // The border is inset by half its own width, because GDI+ draws a path centred on the line:
-            // at the very edge, half the stroke falls outside a bitmap that is exactly as large as the
-            // card and is cut off. A one-pixel border therefore showed as half a pixel of anti-aliased
-            // line - which is why the accent border could not be seen at all.
-            float borderWidth = _hasBorder ? BorderWidthPx : 0f;
-            int inset = (int)Math.Ceiling(borderWidth / 2f);
-            using var path = RoundedRect(inset, inset, w - inset * 2, h - inset * 2, r);
-            using var brush = new SolidBrush(_bg);
-            g.FillPath(brush, path);
-            if (_hasBorder)
-            {
-                using var pen = new Pen(_borderColor, borderWidth);
-                g.DrawPath(pen, path);
-            }
-            var icon = _iconDraw ?? _iconBitmap;
-            if (icon is not null)
-            {
-                int side = Math.Min(Math.Min(w, h) / 2, _iconMaxPx);
-                int ix = (w - side) / 2, iy = (h - side) / 2;
-                // The pre-scaled icon is exactly the size this is drawn at whenever the panel is big
-                // enough for the full size, which is most of the animation: there it is a straight copy
-                // and no resampling happens at all. It is smaller than that only while the panel is
-                // still growing, where the reduction is from the pre-scaled size and therefore cheap.
-                g.InterpolationMode = side == icon.Width
-                    ? InterpolationMode.NearestNeighbor
-                    : InterpolationMode.HighQualityBicubic;
-                g.DrawImage(icon, new Rectangle(ix, iy, side, side));
-            }
-            // No DrawIcon fallback. It was the path that produced hollow icons - it does not write
-            // alpha for an AND-mask icon's opaque pixels into a DIB cleared to transparent - and there
-            // is nothing left for it to fall back to, since the bitmap is what gets cached.
+            ReleaseSurface();
+            if (!MakeSurface()) return;
         }
+        else if (!InFrame(x, y, w, h))
+        {
+            // A card outside the frame the animation was given: the window was resized between its create
+            // event and the handoff, or the geometry was not the two-ended interpolation it looked like.
+            // The frame grows to hold it and what is already on the surface is copied over, which is the
+            // cost of being right about a case the up-front estimate cannot know about.
+            GrowFrame(x, y, w, h);
+            if (Failed) return;
+        }
+        if (Log.On) tAlloc = System.Diagnostics.Stopwatch.GetTimestamp();
 
+        // What has to be drawn again: the card as it is now, minus what is already right. With nothing on
+        // the surface yet that is the whole of it, which is how the first frame of a panel asks for
+        // everything and why the first frame still costs what all of them used to.
+        var card = new Rectangle(x - _frameX, y - _frameY, w, h);
+        using var dirty = new Region(Grow(card));
+        if (_painted)
+        {
+            var was = new Rectangle(_drawnX - _frameX, _drawnY - _frameY, _drawnW, _drawnH);
+            // The symmetric difference of the two cards - the ring between them, either way round - plus
+            // the two things the ring cannot contain. The old corners are where a pixel that was rounded
+            // away is still rounded away; the old border sits just inside the old card, which the new card
+            // covers without ever painting over it. Every rectangle goes in with a pixel of margin, because
+            // a region cannot express an anti-aliased edge and the outermost pixels would be left behind.
+            dirty.Xor(Grow(was));
+            dirty.Union(RectArray(CornerAreas(was, _drawnRadius)));
+            dirty.Union(RectArray(EdgeBands(was)));
+            UnionIcon(dirty, was);
+        }
+        // ... and the same two things about the card being drawn. A card that is *shrinking* has its own
+        // corners and its own border well inside the card it came from, so the ring between the two does not
+        // reach them: they would keep the bigger card's pixels, which is a square corner drawn over a round
+        // one and a border that never appears. For a growing card both are already inside the ring and this
+        // costs a few thin bands and four small squares.
+        dirty.Union(RectArray(CornerAreas(card, radius)));
+        dirty.Union(RectArray(EdgeBands(card)));
+        UnionIcon(dirty, card);        // the icon this frame draws, which may have moved or grown
+
+        var scans = dirty.GetRegionScans(new Matrix());
+        Zero(scans);
+        using (var g = Graphics.FromHdc(_memDc))
+        {
+            g.SetClip(dirty, CombineMode.Replace);
+            DrawCard(g, card, radius);
+        }
         if (Log.On) tDraw = System.Diagnostics.Stopwatch.GetTimestamp();
-        Premultiply(bits, w * h);
+
+        Premultiply(scans);
         if (Log.On) tPremul = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        _surfaceReady = true;
-        _drawnW = w; _drawnH = h; _drawnRadius = radius;
+        _painted = true;
+        _drawnX = x; _drawnY = y; _drawnW = w; _drawnH = h; _drawnRadius = radius;
         Present(x, y, w, h, alpha, tStart, tAlloc, tDraw, tPremul);
 
         if (_frames < 3)
         {
             _frames++;
             Log.Write($"panel frame {_frames}: rect {x},{y} {w}x{h} radius={radius} alpha={alpha}");
+        }
+    }
+
+    /// <summary>
+    /// Allocates the surface: one DIB the size of the animation's frame, with a device context that stays
+    /// selected for the panel's life, so that a frame only ever draws into it. Returns false when it cannot
+    /// be made, which leaves the panel with nothing to show - the same as any other creation failure.
+    ///
+    /// It does not release what is already there: GrowFrame has to copy the old surface first, and that is
+    /// the caller's business. ReleaseSurface does it for everyone else.
+    /// </summary>
+    private bool MakeSurface()
+    {
+        var bmi = new Native.BITMAPINFO
+        {
+            Header = new Native.BITMAPINFOHEADER
+            {
+                BiSize = (uint)Marshal.SizeOf<Native.BITMAPINFOHEADER>(),
+                BiWidth = _frameW,
+                BiHeight = -_frameH,               // top-down
+                BiPlanes = 1,
+                BiBitCount = 32,
+                BiCompression = 0,                 // BI_RGB
+            }
+        };
+        IntPtr screenDc = Native.GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero) return false;
+        IntPtr dib = Native.CreateDIBSection(screenDc, ref bmi, 0, out var bits, IntPtr.Zero, 0);
+        Native.ReleaseDC(IntPtr.Zero, screenDc);
+        if (dib == IntPtr.Zero || bits == IntPtr.Zero)
+        {
+            if (dib != IntPtr.Zero) Native.DeleteObject(dib);
+            return false;
+        }
+        IntPtr dc = Native.CreateCompatibleDC(IntPtr.Zero);
+        _dib = dib; _memDc = dc; _oldBitmap = Native.SelectObject(dc, dib);
+        _bits = bits; _stride = _frameW;
+        _surfaceReady = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Draws the card into the surface, in the frame's coordinates: the rounded background, its border and
+    /// the icon. Exactly the drawing this always was - what changed is that the caller hands it a frame that
+    /// is mostly already correct and clips it to the part that is not.
+    /// </summary>
+    private void DrawCard(Graphics g, Rectangle card, int radius)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        int r = Compat.Clamp(radius, 0, Math.Min(card.Width, card.Height) / 2);
+        // The border is inset by half its own width, because GDI+ draws a path centred on the line: at the
+        // very edge, half the stroke falls outside the card and is cut off. A one-pixel border therefore
+        // showed as half a pixel of anti-aliased line - which is why the accent border could not be seen.
+        float borderWidth = _hasBorder ? _borderWidthPx : 0f;
+        int inset = (int)Math.Ceiling(borderWidth / 2f);
+        using var path = RoundedRect(card.X + inset, card.Y + inset,
+                                     card.Width - inset * 2, card.Height - inset * 2, r);
+        using var brush = new SolidBrush(_bg);
+        g.FillPath(brush, path);
+        if (_hasBorder)
+        {
+            using var pen = new Pen(_borderColor, borderWidth);
+            g.DrawPath(pen, path);
+        }
+        var icon = _iconDraw ?? _iconBitmap;
+        if (icon is null) return;
+        int side = Math.Min(Math.Min(card.Width, card.Height) / 2, _iconMaxPx);
+        int ix = card.X + (card.Width - side) / 2, iy = card.Y + (card.Height - side) / 2;
+        // The pre-scaled icon is exactly the size this is drawn at whenever the card is big enough for the
+        // full size, which is most of the animation: there it is a straight copy and no resampling happens
+        // at all. Smaller than that only while the card is still growing, where the reduction is from the
+        // pre-scaled size and therefore cheap.
+        //
+        // There is no DrawIcon fallback. It was the path that produced hollow icons - it does not write
+        // alpha for an AND-mask icon's opaque pixels into a DIB cleared to transparent - and there is
+        // nothing left for it to fall back to, since the bitmap is what gets cached.
+        g.InterpolationMode = side == icon.Width
+            ? InterpolationMode.NearestNeighbor
+            : InterpolationMode.HighQualityBicubic;
+        g.DrawImage(icon, new Rectangle(ix, iy, side, side));
+    }
+
+    /// <summary>
+    /// The four corner squares of a card, which is where its rounding is. The ring between two cards of
+    /// different size does not reach them, and a pixel that was rounded away there has to be drawn again.
+    /// </summary>
+    private static Rectangle[] CornerAreas(Rectangle card, int radius)
+    {
+        int side = Math.Min(card.Width, card.Height);
+        int r = Math.Min(Compat.Clamp(radius, 0, side / 2) + 1, side);   // +1: the anti-aliased edge
+        return new[]
+        {
+            new Rectangle(card.Left, card.Top, r, r),
+            new Rectangle(card.Right - r, card.Top, r, r),
+            new Rectangle(card.Left, card.Bottom - r, r, r),
+            new Rectangle(card.Right - r, card.Bottom - r, r, r),
+        };
+    }
+
+    /// <summary>
+    /// A band around a card's whole edge, thick enough to cover its border and the pixels the border was
+    /// anti-aliased into. The border is drawn inside the card, so the ring between two cards does not cover
+    /// it and it would otherwise still be showing through the new background.
+    /// </summary>
+    private Rectangle[] EdgeBands(Rectangle card)
+    {
+        int t = Math.Min((int)Math.Ceiling(_borderWidthPx) + 1, Math.Min(card.Width, card.Height));
+        return new[]
+        {
+            new Rectangle(card.Left, card.Top, card.Width, t),
+            new Rectangle(card.Left, card.Bottom - t, card.Width, t),
+            new Rectangle(card.Left, card.Top, t, card.Height),
+            new Rectangle(card.Right - t, card.Top, t, card.Height),
+        };
+    }
+
+    /// <summary>
+    /// Whether a card fits inside the frame with a pixel to spare, so that the anti-aliased edge and the
+    /// region's own rounding cannot fall outside it.
+    /// </summary>
+    private bool InFrame(int x, int y, int w, int h)
+        => x - 1 >= _frameX && y - 1 >= _frameY &&
+           x + w + 1 <= _frameX + _frameW && y + h + 1 <= _frameY + _frameH;
+
+    /// <summary>
+    /// Grows the frame to hold a card that does not fit, keeping what has already been drawn.
+    ///
+    /// This is the fallback for the estimate Create makes not holding - a window resized between its create
+    /// event and the handoff, say. It costs a copy of the old frame and a new allocation, which is what a
+    /// frame used to cost every time, and it says so in the log: if it is happening often, the estimate is
+    /// wrong rather than the case being unusual.
+    /// </summary>
+    private void GrowFrame(int x, int y, int w, int h)
+    {
+        int left = Math.Min(_frameX, x - 1), top = Math.Min(_frameY, y - 1);
+        int right = Math.Max(_frameX + _frameW, x + w + 1), bottom = Math.Max(_frameY + _frameH, y + h + 1);
+        // Slack, because the case this exists for does not happen once. The measured one was a window that
+        // sizes itself after it is created: the frame it was given was 1953x703 and the card it grew into
+        // was 1506x856, so it was grown again on the next frame and on the frame after that, a few pixels at
+        // a time, and each grow copies the whole surface - 434 of them in one session, which is most of what
+        // the incremental drawing was saving. Slack in the frame costs nothing else, because the compositor
+        // is handed the card and never the frame.
+        int padX = Math.Max(64, (right - left) / 4), padY = Math.Max(64, (bottom - top) / 4);
+        left -= padX; right += padX; top -= padY; bottom += padY;
+        int nw = right - left, nh = bottom - top;
+        if ((long)nw * nh > MaxFramePixels)
+        {
+            Log.Write($"panel frame would have to grow to {nw}x{nh}, past the " +
+                      $"{MaxFramePixels / 1_000_000} MP cap; not drawn");
+            Failed = true;
+            return;
+        }
+
+        IntPtr oldDib = _dib, oldDc = _memDc, oldSelected = _oldBitmap;
+        IntPtr oldBits = _bits;
+        int oldStride = _stride, oldW = _frameW, oldH = _frameH;
+        int dx = _frameX - left, dy = _frameY - top;
+
+        Log.Write($"panel frame grew from {_frameW}x{_frameH} to {nw}x{nh}" +
+                  $" for a {w}x{h} card at {x},{y}; the card was outside the frame it was given");
+
+        _frameX = left; _frameY = top; _frameW = nw; _frameH = nh;
+        _dib = IntPtr.Zero; _memDc = IntPtr.Zero; _oldBitmap = IntPtr.Zero; _bits = IntPtr.Zero;
+        _surfaceReady = false;
+        if (!MakeSurface())
+        {
+            FreeSurface(oldDib, oldDc, oldSelected);
+            Failed = true;
+            return;
+        }
+
+        // The old pixels are premultiplied ARGB and so are the new ones, so this is a straight copy of the
+        // rows that had been drawn - everything outside them is untouched memory that nothing will read,
+        // because every pixel the compositor is handed comes from the card's own rectangle.
+        if (oldBits != IntPtr.Zero)
+        {
+            unsafe
+            {
+                var src = (byte*)oldBits;
+                var dst = (byte*)_bits;
+                for (int row = 0; row < oldH; row++)
+                    Buffer.MemoryCopy(src + (long)row * oldStride * 4,
+                                      dst + ((long)(row + dy) * _stride + dx) * 4,
+                                      (long)nw * 4, (long)oldW * 4);
+            }
+        }
+        FreeSurface(oldDib, oldDc, oldSelected);
+    }
+
+    private static void FreeSurface(IntPtr dib, IntPtr dc, IntPtr selected)
+    {
+        if (dc != IntPtr.Zero)
+        {
+            if (selected != IntPtr.Zero) Native.SelectObject(dc, selected);
+            Native.DeleteDC(dc);
+        }
+        if (dib != IntPtr.Zero) Native.DeleteObject(dib);
+    }
+
+    /// <summary>
+    /// A rectangle with a pixel of margin. A region is a set of whole pixels and cannot express an
+    /// anti-aliased edge, so every rectangle that goes into one goes in slightly larger than the geometry
+    /// it stands for - otherwise the outermost pixels of a previous frame's edge are never painted over.
+    /// </summary>
+    private static Rectangle Grow(Rectangle r)
+        => new(r.X - 1, r.Y - 1, Math.Max(0, r.Width) + 2, Math.Max(0, r.Height) + 2);
+
+    private static Region RectArray(Rectangle[] rects)
+    {
+        var region = new Region(Grow(rects[0]));
+        for (int i = 1; i < rects.Length; i++) region.Union(Grow(rects[i]));
+        return region;
+    }
+
+    /// <summary>
+    /// Adds where the icon is drawn on a card, so that the previous frame's icon is painted over and this
+    /// frame's is not clipped away.
+    /// </summary>
+    private void UnionIcon(Region into, Rectangle card)
+    {
+        var icon = _iconDraw ?? _iconBitmap;
+        if (icon is null || card.Width <= 0 || card.Height <= 0) return;
+        int side = Math.Min(Math.Min(card.Width, card.Height) / 2, _iconMaxPx);
+        into.Union(Grow(new Rectangle(card.X + (card.Width - side) / 2,
+                                      card.Y + (card.Height - side) / 2, side, side)));
+    }
+
+    /// <summary>
+    /// Writes transparent over a set of rectangles. Clear() would do the whole frame, and only these pixels
+    /// are wrong: the ones a card of some earlier size covered and this one does not.
+    /// </summary>
+    private unsafe void Zero(RectangleF[] rects)
+    {
+        var p = (uint*)_bits;
+        foreach (var r in rects)
+        {
+            int x0 = Math.Max(0, (int)Math.Floor(r.Left)), x1 = Math.Min(_frameW, (int)Math.Ceiling(r.Right));
+            int y0 = Math.Max(0, (int)Math.Floor(r.Top)), y1 = Math.Min(_frameH, (int)Math.Ceiling(r.Bottom));
+            if (x1 <= x0) continue;
+            for (int y = y0; y < y1; y++)
+            {
+                uint* row = p + (long)y * _stride + x0;
+                for (int x = 0, n = x1 - x0; x < n; x++) row[x] = 0;
+            }
         }
     }
 
@@ -1504,7 +1807,9 @@ internal sealed class Panel
 
         var dst = new POINT { X = x, Y = y };
         var size = new SIZE { Cx = w, Cy = h };
-        var src = new POINT { X = 0, Y = 0 };
+        // The card is a rectangle inside the fixed frame, so the compositor is given that part of the
+        // surface: the source offset moves with the card, the frame underneath does not move at all.
+        var src = new POINT { X = x - _frameX, Y = y - _frameY };
         var blend = new BLENDFUNCTION
         {
             BlendOp = Native.AC_SRC_OVER,
@@ -1512,6 +1817,7 @@ internal sealed class Panel
             SourceConstantAlpha = (byte)Compat.Clamp(alpha, 0, 255),
             AlphaFormat = Native.AC_SRC_ALPHA,
         };
+        long tBefore = Log.On ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         Native.UpdateLayeredWindow(_hwnd, IntPtr.Zero, ref dst, ref size, _memDc, ref src, 0, ref blend,
                                    Native.ULW_ALPHA);
         // Only for panels big enough to be worth looking at: a small one is already inside the frame
@@ -1519,70 +1825,75 @@ internal sealed class Panel
         // comes first so that the timestamp is not even read for the frames nobody watches.
         if (Log.On && (long)w * h > 400_000)
         {
-            long tUpdate = System.Diagnostics.Stopwatch.GetTimestamp();
+            long tAfter = System.Diagnostics.Stopwatch.GetTimestamp();
             double Ms(long from, long to) => (to - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-            Log.Write($"frame {w}x{h} ({w * (long)h / 1000} Kpx):" +
-                      $" alloc+dc={Ms(tStart, tAlloc):F2} draw={Ms(tAlloc, tDraw):F2}" +
-                      $" premul={Ms(tDraw, tPremul):F2} update={Ms(tPremul, tUpdate):F2}" +
-                      $" total={Ms(tStart, tUpdate):F2} ms alpha={alpha}" +
-                      (tDraw == 0 ? " (reused)" : ""));
+            if (tDraw == 0)
+            {
+                // Nothing was drawn: the same bitmap was handed over again to change only its opacity.
+                // The stage timings belong to a drawn frame and are all zero here, which used to be
+                // subtracted anyway and printed as tens of millions of milliseconds.
+                Log.Write($"frame {w}x{h} ({w * (long)h / 1000} Kpx): reused," +
+                          $" update={Ms(tBefore, tAfter):F2} ms alpha={alpha}");
+            }
+            else
+            {
+                Log.Write($"frame {w}x{h} ({w * (long)h / 1000} Kpx):" +
+                          $" alloc+dc={Ms(tStart, tAlloc):F2} draw={Ms(tAlloc, tDraw):F2}" +
+                          $" premul={Ms(tDraw, tPremul):F2} update={Ms(tPremul, tAfter):F2}" +
+                          $" total={Ms(tStart, tAfter):F2} ms alpha={alpha}");
+            }
         }
     }
 
     /// <summary>Frees the cached bitmap and device context, if there are any.</summary>
     private void ReleaseSurface()
     {
-        if (_memDc != IntPtr.Zero)
-        {
-            if (_oldBitmap != IntPtr.Zero) Native.SelectObject(_memDc, _oldBitmap);
-            Native.DeleteDC(_memDc);
-            _memDc = IntPtr.Zero; _oldBitmap = IntPtr.Zero;
-        }
-        if (_dib != IntPtr.Zero)
-        {
-            Native.DeleteObject(_dib);
-            _dib = IntPtr.Zero;
-        }
+        FreeSurface(_dib, _memDc, _oldBitmap);
+        _dib = IntPtr.Zero; _memDc = IntPtr.Zero; _oldBitmap = IntPtr.Zero;
+        _bits = IntPtr.Zero; _stride = 0;
         _surfaceReady = false;
+        // Nothing is on a surface that does not exist, so the next frame drawn is a full one.
+        _painted = false;
+        _drawnW = _drawnH = 0; _drawnRadius = 0;
     }
 
     /// <summary>
     /// UpdateLayeredWindow wants premultiplied ARGB; GDI+ writes straight alpha.
     ///
-    /// Most of the card is already finished before this runs: the interior the brush filled is fully
-    /// opaque and the corners are fully transparent, and for both of those there is nothing to do.
-    /// Finding that out used to mean reading every pixel one at a time, which across three or four
-    /// megapixels is twelve megabytes of memory that is not in cache - measured at 7.6 ms a frame, the
-    /// largest single part of its cost, and larger than rendering the card through GDI+ and handing it
-    /// to the compositor put together.
+    /// Only the pixels a card was actually drawn into need it, which is the region the caller has just
+    /// drawn - for a card that grew, the ring between it and the last one, not the card. Doing this a pixel
+    /// at a time over the whole frame used to mean reading twelve megabytes that are not in cache at three
+    /// or four megapixels: measured at 7.6 ms a frame, the largest single part of its cost and more than
+    /// rendering the card and handing it to the compositor put together.
     ///
-    /// So the pixels are now tested a block at a time and whole blocks of finished pixels are stepped
-    /// over. Only the test is vectorised: any block that is not all-opaque goes through the same
-    /// per-pixel code as before, which is what makes this unable to change the result for any pixel.
+    /// The pixels are tested a pair at a time and whole pairs of finished pixels are stepped over. Only the
+    /// test is vectorised: any pair that is not all-opaque goes through the same per-pixel code as before,
+    /// which is what makes this unable to change the result for any pixel.
     /// </summary>
-    private static unsafe void Premultiply(IntPtr bits, int count)
+    private unsafe void Premultiply(RectangleF[] rects)
     {
-        var p = (uint*)bits;
-
-        // Two pixels per test: one 64-bit read, one mask against the two alpha bytes. If both are fully
-        // opaque there is nothing to do for either, and that is the whole interior of the card. The
-        // memory still has to be touched either way, so this halves the loop's own overhead rather than
-        // the traffic - the traffic is the part that cannot be avoided without knowing in advance which
-        // pixels GDI+ drew with partial alpha, which is the edges and the icon and nothing else.
-        //
-        // A vector type would do better and is not available: System.Numerics.Vector lives in a NuGet
-        // package on .NET Framework, and this program is built offline from a pinned toolchain.
         const ulong BothOpaque = 0xFF000000FF000000UL;
-        int i = 0;
-        for (; i <= count - 2; i += 2)
+        var p = (uint*)_bits;
+        foreach (var r in rects)
         {
-            if ((*(ulong*)(p + i) & BothOpaque) == BothOpaque) continue;
-            PremultiplyPixel(p, i);
-            PremultiplyPixel(p, i + 1);
+            int x0 = Math.Max(0, (int)Math.Floor(r.Left)), x1 = Math.Min(_frameW, (int)Math.Ceiling(r.Right));
+            int y0 = Math.Max(0, (int)Math.Floor(r.Top)), y1 = Math.Min(_frameH, (int)Math.Ceiling(r.Bottom));
+            int n = x1 - x0;
+            if (n <= 0) continue;
+            for (int y = y0; y < y1; y++)
+            {
+                uint* row = p + (long)y * _stride + x0;
+                int i = 0;
+                for (; i <= n - 2; i += 2)
+                {
+                    if ((*(ulong*)(row + i) & BothOpaque) == BothOpaque) continue;
+                    PremultiplyPixel(row, i);
+                    PremultiplyPixel(row, i + 1);
+                }
+                // The remainder, which is at most one pixel.
+                for (; i < n; i++) PremultiplyPixel(row, i);
+            }
         }
-
-        // The remainder, which is at most one pixel.
-        for (; i < count; i++) PremultiplyPixel(p, i);
     }
 
     [System.Runtime.CompilerServices.MethodImpl(
@@ -1600,12 +1911,19 @@ internal sealed class Panel
     }
 
     /// <summary>
-    /// How thick the accent border is drawn. Two pixels rather than one: at one pixel the line lands
-    /// on a half-pixel boundary and anti-aliasing spreads it across two rows at roughly 50% opacity
-    /// each, which on a light card is barely visible. Two pixels is also what a window's own frame
-    /// looks like at 100% scaling.
+    /// How thick the accent border is drawn, in logical pixels - two rather than one, because at one pixel
+    /// the line lands on a half-pixel boundary and anti-aliasing spreads it across two rows at roughly 50%
+    /// opacity each, which on a light card is barely visible. Two logical pixels is also what a window's own
+    /// frame looks like at 100% scaling.
+    ///
+    /// Logical, and scaled by the window's DPI in Create: this was two *physical* pixels, so the border was
+    /// a hairline on a 200% display and would have been a quarter of one at 400% - while everything it sits
+    /// next to, the card's corner radius and the icon, was scaled and stayed the same size to the eye.
     /// </summary>
-    private const float BorderWidthPx = 2f;
+    private const float BorderWidthLogical = 2f;
+
+    /// <summary>The border's width in the pixels this panel is drawn at, resolved once per panel.</summary>
+    private float _borderWidthPx = BorderWidthLogical;
 
     private static GraphicsPath RoundedRect(int x, int y, int w, int h, int r)
     {

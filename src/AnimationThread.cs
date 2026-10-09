@@ -65,6 +65,14 @@ internal sealed class AnimationThread
         public required WindowInfo Target;
         public int StartSize, StartRadius, AnchorX, AnchorY;
 
+        /// <summary>
+        /// The other end of the animation, when it is a square: the point a closing card collapses into.
+        /// Zero size for an animation that ends at the window it is opening, which is the window's own
+        /// rectangle and comes from Target. Panel.Create unions the two ends to size its surface, so this
+        /// is what keeps that surface big enough for every frame the animation will ask for.
+        /// </summary>
+        public int FinalX, FinalY, FinalSize;
+
         /// <summary>Drawn as soon as the panel is created, if one was handed over.</summary>
         public FirstFrame? First;
 
@@ -180,7 +188,7 @@ internal sealed class AnimationThread
     /// the calling thread; only its window operations belong to the other one.
     /// </summary>
     public Panel Attach(WindowInfo target, int startSize, int startRadius, int anchorX, int anchorY,
-                        FirstFrame? first = null)
+                        int finalX, int finalY, int finalSize, FirstFrame? first = null)
     {
         var panel = new Panel();
         lock (_gate)
@@ -193,6 +201,9 @@ internal sealed class AnimationThread
                 StartRadius = startRadius,
                 AnchorX = anchorX,
                 AnchorY = anchorY,
+                FinalX = finalX,
+                FinalY = finalY,
+                FinalSize = finalSize,
                 First = first,
                 AttachedAt = System.Diagnostics.Stopwatch.GetTimestamp(),
             });
@@ -299,7 +310,8 @@ internal sealed class AnimationThread
                     }
                     if (!it.Created)
                     {
-                        it.Panel.Create(it.Target, it.StartSize, it.StartRadius, it.AnchorX, it.AnchorY);
+                        it.Panel.Create(it.Target, it.StartSize, it.StartRadius, it.AnchorX, it.AnchorY,
+                                        it.FinalX, it.FinalY, it.FinalSize);
                         it.Created = true;
                         // A panel that could not be created is left Failed for Animator.Tick to
                         // notice, which releases the window through the normal path.
