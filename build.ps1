@@ -93,19 +93,22 @@ Write-Host "project: $Project ($Configuration)" -ForegroundColor DarkGray
 # file name. A tree with changes in it gets -dirty, because a build from such a tree is not the commit it
 # names and a version that quietly claims otherwise is worse than none; untracked files are not counted, since
 # the ones that live here sit outside the compiled directory and would mark every build dirty for nothing.
-$stamp  = Get-Date -Format 'yyyy.MM.dd-HHmm'
-$commit = ''
+#
+# The variable is not called $commit: PowerShell variable names do not distinguish case, so $commit and the
+# -Commit parameter are one and the same, and clearing the working variable would clear the argument with it.
+$stamp    = Get-Date -Format 'yyyy.MM.dd-HHmm'
+$commitId = ''
 
-if ($Commit) { $commit = $Commit }
+if ($Commit) { $commitId = $Commit }
 elseif (Test-Path (Join-Path $root '.git')) {
     $short = & git -C $root rev-parse --short HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $short) {
-        $commit = $short.Trim()
-        if (& git -C $root status --porcelain --untracked-files=no 2>$null) { $commit += '-dirty' }
+        $commitId = $short.Trim()
+        if (& git -C $root status --porcelain --untracked-files=no 2>$null) { $commitId += '-dirty' }
     }
 }
 
-if (-not $commit) {
+if (-not $commitId) {
     # No git to ask. Better to ask the person running the build than to write a version that names nothing:
     # the whole point of the number is to say which source produced this exe.
     #
@@ -114,18 +117,18 @@ if (-not $commit) {
     if ([Console]::IsInputRedirected) {
         Write-Host "note   : no git here, so this build's version will say nogit." -ForegroundColor Yellow
         Write-Host "         Pass -Commit <id> to name it yourself." -ForegroundColor Yellow
-        $commit = 'nogit'
+        $commitId = 'nogit'
     }
     else {
         Write-Host "note   : no git commit could be read here." -ForegroundColor Yellow
         $manual = Read-Host "         commit id for this build (Enter to leave it as nogit)"
         # Kept to characters that are safe in a file name and in the command line it is passed on.
         $clean = ($manual -replace '[^A-Za-z0-9._-]', '-').Trim('-')
-        $commit = if ($clean) { $clean } else { 'nogit' }
+        $commitId = if ($clean) { $clean } else { 'nogit' }
     }
 }
 
-$version = "$stamp-$commit"
+$version = "$stamp-$commitId"
 Write-Host "version: $version" -ForegroundColor DarkGray
 
 & $dn build $proj -c $Configuration --nologo "-p:InformationalVersion=$version" "-p:Version=$(Get-Date -Format 'yyyy.M.d')"
