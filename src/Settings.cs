@@ -72,6 +72,43 @@ internal sealed class Settings
     public readonly List<string> ExcludedClasses = new();
     public readonly List<string> ExcludedProcesses = new();
 
+    /// <summary>
+    /// When each rule was added, oldest first, as "class:Name" or "process:Name".
+    ///
+    /// The two lists above cannot answer that question - a rule added today sits at the end of one of them and
+    /// an older rule of the other kind sits in front of it - and the panel shows one list of rules in the order
+    /// they were added, newest at the bottom, so that the newest rule is where the eye ends up. It is also
+    /// what lets a rule be moved between the two kinds without moving in the list: moving it is a change of
+    /// kind, not a new rule.
+    /// </summary>
+    public readonly List<string> ExcludeOrder = new();
+
+    /// <summary>
+    /// Marks an entry that is switched off rather than removed. A leading '!' on the entry itself, which no
+    /// window class and no executable name can begin with, so the file keeps one list per kind and an entry
+    /// can be turned off without being forgotten - which is what the blacklist panel's disable button does.
+    /// </summary>
+    public const char DisabledMark = '!';
+
+    /// <summary>
+    /// Whether a class name or process name is in one of those lists, switched off entries excluded.
+    ///
+    /// Written as a comparison against the entry's offset rather than as a substring of a cleaned-up copy
+    /// because this runs once per candidate window on the path that has two milliseconds to hide it: one pass,
+    /// no allocation, no trimming.
+    /// </summary>
+    public static bool Matches(List<string> entries, string value)
+    {
+        foreach (var entry in entries)
+        {
+            int off = entry.Length > 0 && entry[0] == DisabledMark ? 1 : 0;
+            if (entry.Length - off != value.Length) continue;
+            if (string.Compare(entry, off, value, 0, value.Length, StringComparison.OrdinalIgnoreCase) == 0)
+                return true;
+        }
+        return false;
+    }
+
     public static string IniPath =>
         Path.Combine(AppContext.BaseDirectory, "MobileOpenAnimation.ini");
 
@@ -133,9 +170,28 @@ internal sealed class Settings
                 case "maxhidems": s.MaxHideMs = Clamp(Int(val, s.MaxHideMs), 500, 60000); break;
                 case "excludeclasses": s.ExcludedClasses.Clear(); AddList(s.ExcludedClasses, val); break;
                 case "excludeprocesses": s.ExcludedProcesses.Clear(); AddList(s.ExcludedProcesses, val); break;
+                case "excludeorder": s.ExcludeOrder.Clear(); AddList(s.ExcludeOrder, val); break;
             }
         }
+
+        // An ini written before the order existed, or edited by hand, has rules the ledger does not mention.
+        // They are appended in the order the lists hold them, which is the best that can be said for a rule
+        // whose age nobody recorded - and the alternative, treating them as absent, would show a rule the
+        // user cannot see in the panel and cannot explain.
+        foreach (var name in s.ExcludedClasses) SeedOrder(s, "class", name);
+        foreach (var name in s.ExcludedProcesses) SeedOrder(s, "process", name);
         return s;
+    }
+
+    /// <summary>Adds an entry to the ledger if it is not in it already, as "kind:name".</summary>
+    private static void SeedOrder(Settings s, string kind, string entry)
+    {
+        int off = entry.Length > 0 && entry[0] == DisabledMark ? 1 : 0;
+        string name = entry.Substring(off);
+        if (name.Length == 0) return;
+        foreach (var known in s.ExcludeOrder)
+            if (string.Equals(known, $"{kind}:{name}", StringComparison.OrdinalIgnoreCase)) return;
+        s.ExcludeOrder.Add($"{kind}:{name}");
     }
 
     public void Save()
@@ -193,10 +249,17 @@ internal sealed class Settings
         sb.AppendLine($"MaxHideMs={MaxHideMs}");
         sb.AppendLine();
         sb.AppendLine("[exclusions]");
-        sb.AppendLine("; window classes that never animate; one per line, comma separated");
+        sb.AppendLine("; window classes that never animate; one per line, comma separated. The tray menu's");
+        sb.AppendLine("; Debug mode > Blacklist manages these from the log; an entry that begins with '!' is");
+        sb.AppendLine("; switched off rather than deleted, and can be switched back on there.");
         sb.AppendLine("ExcludeClasses=" + string.Join(",", ExcludedClasses));
-        sb.AppendLine("; whole processes (exe name without .exe); one per line, comma separated");
+        sb.AppendLine("; whole processes (exe name without .exe); one per line, comma separated. '!' as above.");
         sb.AppendLine("ExcludeProcesses=" + string.Join(",", ExcludedProcesses));
+        sb.AppendLine();
+        sb.AppendLine("; when each rule was added, oldest first, as class:name or process:name. Written by the");
+        sb.AppendLine("; panel, which lists the rules in this order - newest at the bottom. A rule that is not");
+        sb.AppendLine("; mentioned here is treated as the oldest.");
+        sb.AppendLine("ExcludeOrder=" + string.Join(",", ExcludeOrder));
         File.WriteAllText(IniPath, sb.ToString(), Encoding.UTF8);
         LogState("saved");
     }
@@ -290,12 +353,42 @@ internal static class Strings
              "动画将完全不会生效。"),
         ["About"]        = ("About", "关于"),
         ["Version"]      = ("Version", "版本"),
+        ["Blacklist"]    = ("Blacklist", "黑名单管理"),
+        // No parenthetical about debug mode: the line that appears in the empty list already says it, and the
+        // label is the place the two lists are told apart, not the place the log is explained.
+        ["BlacklistRecent"] = ("Recent records", "最近记录"),
+        ["BlacklistEntries"] = ("Blacklist", "黑名单"),
+        ["BlacklistRefresh"] = ("Refresh", "刷新"),
+        ["BlacklistByClass"] = ("Block this window class", "拉黑此类窗口"),
+        ["BlacklistByProcess"] = ("Block the whole process", "拉黑整个进程"),
+        ["BlacklistToggle"] = ("Enable / disable", "启用 / 禁用"),
+        ["BlacklistRemove"] = ("Delete", "删除"),
+        ["BlacklistClose"] = ("Close", "关闭"),
+        // Square brackets, not the full-width parentheses these used to be, and no trailing space: RuleText
+        // joins the notes with one and puts them all before the name, so the spacing lives in one place.
+        ["BlacklistDisabled"] = ("[disabled]", "[已禁用]"),
+        ["BlacklistBuiltIn"] = ("[built-in rule]", "[内置规则]"),
+        ["BlacklistCovered"] = ("[covered by the process rule]", "[已被进程规则覆盖]"),
+        // Shown in the line of text above the Close button - not in a tooltip. There is already a static
+        // there, and a bubble that has to be hovered is a worse way to say a thing this short.
+        ["BlacklistCloseHint"] =
+            ("All changes are saved and take effect immediately. You can close this window at any time.",
+             "所有改动均已自动保存并即刻生效，可随时关闭本窗口"),
+        ["BlacklistClass"] = ("class", "窗口类"),
+        ["BlacklistProcess"] = ("process", "进程"),
+        ["BlacklistEmpty"] = ("Nothing in the log yet. Turn Debug mode on, reproduce it once, then open "
+            + "this again.",
+            "日志里还没有候选窗口。先启用调试模式、复现一次，再打开这里。"),
         ["Exit"]         = ("Exit", "退出"),
         // The About text is not decoration: AGPL-3.0 section 0 requires an interactive interface
         // to show appropriate legal notices - a copyright notice, a statement that there is no
         // warranty, that the work may be conveyed under the licence, and how to view it - and
         // section 5a requires a notice that the work was modified, with a date. The tray menu's
         // About entry is the prominent item that satisfies it.
+        //
+        // The source line is a hyperlink rather than a bare URL because the box it is shown in is a
+        // task dialog, which draws links itself and tells us when one was followed. Nothing about the
+        // text is drawn by us. No ini path: that is what "Open config directory" in the tray menu is for.
         ["AboutText"] =
             ("Mobile Open Animation for Windows\n" +
              "Adds a smartphone-style open animation to Windows.\n\n" +
@@ -304,7 +397,7 @@ internal static class Strings
              "Copyright (C) 2026 CodebyGPT\n" +
              "Released under the GNU Affero General Public License, version 3 or\n" +
              "later, with NO WARRANTY.\n" +
-             "License and source: https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows",
+             "License and source: <a href=\"" + SourceUrl + "\">" + SourceName + "</a>",
              "Mobile Open Animation for Windows\n" +
              "给 Windows 增加类似智能手机的开屏过渡动画。\n\n" +
              "以 Nico6719/windhawk-mod-mobile-open-animation (AGPL-3.0)\n" +
@@ -312,8 +405,16 @@ internal static class Strings
              "Copyright (C) 2026 CodebyGPT\n" +
              "本程序按 GNU Affero 通用公共许可证第 3 版或更高版本发布，\n" +
              "不提供任何担保。\n" +
-             "许可证全文与源代码：https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows"),
+             "许可证全文与源代码：<a href=\"" + SourceUrl + "\">" + SourceName + "</a>"),
     };
+
+    /// <summary>
+    /// Where the program lives, and the one place it is written down. The About box's link and the
+    /// check-for-updates button are both built from these, so the address appears once in the source.
+    /// </summary>
+    public const string SourceUrl =
+        "https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows";
+    public const string SourceName = "github.com/CodebyGPT/Mobile_Open_Animation_for_Windows";
 
     public static string T(string key)
     {

@@ -19,7 +19,7 @@ internal static class Program
 {
     internal const int MenuLangEn = 1, MenuLangZh = 2, MenuAutoStart = 3,
                        MenuConfig = 4, MenuAbout = 5, MenuExit = 6, MenuCloseAnim = 7,
-                       MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10;
+                       MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10, MenuBlacklist = 11;
 
     private static Settings _s = null!;
     internal static Settings S => _s;
@@ -134,6 +134,12 @@ internal static class Program
         Log.Write($"elevated={IsElevated()}");
         Strings.Use(_s.Language);
 
+        // Before the first window is made. uxtheme takes the preference only while nothing has been created
+        // with the old one, so a tray icon or a menu built before this would keep the theme it was built
+        // with. It is also what makes the two boxes below - the already-running note is silent, the elevation
+        // one is not - come up in the user's theme rather than always in the light one.
+        Native.DarkMode.Apply();
+
         // Silent on purpose. A tray program that is already running needs no dialog to say so: the tray
         // icon is next to the clock, and being told "already running" by a second copy of something you
         // have just asked for is noise rather than information. The log keeps the evidence.
@@ -220,6 +226,7 @@ internal static class Program
         MenuDynCorner => "Dynamic corner radius",
         MenuReturnOrigin => "Desktop return animation",
         MenuDebugEnable => "Debug mode",
+        MenuBlacklist => "Blacklist",
         _ => $"unknown ({id})",
     };
 
@@ -315,13 +322,17 @@ internal static class Program
                 }
                 break;
             case MenuAbout:
-                // The version comes first because it is the thing most often wanted from this box: which build
-                // am I running. Everything AGPL-3.0 section 0 asks an interactive interface to show is below
-                // it, and the ini path is the one other thing people look here for.
-                Native.MessageBoxW(IntPtr.Zero,
-                    Strings.T("Version") + ": " + Build.Version + "\n\n" +
-                    Strings.T("AboutText") + "\n\n" + Settings.IniPath,
-                    Strings.T("About"), 0x00000040 /* MB_ICONINFORMATION */);
+                // A task dialog, not a message box: it is the only system dialog that draws a link that can
+                // be followed and offers a button whose caption is ours. Everything AGPL-3.0 section 0 asks an
+                // interactive interface to show is in the text, and the second button goes to the newest
+                // release. The ini path that used to be the last line is gone - "Open config directory", a
+                // few entries up, is where that is asked for.
+                AboutDialog.Show(_host.Hwnd);
+                break;
+            case MenuBlacklist:
+                // Modal, and its own loop, so the animation keeps running behind it: the windows it is there to
+                // list are the ones being animated while the user is looking at the panel.
+                BlacklistPanel.Show();
                 break;
             case MenuExit:
                 _guard.ReleaseAll();
@@ -390,6 +401,9 @@ internal sealed class TrayHost
         if (Native.RegisterClassExW(ref cls) == 0) throw new InvalidOperationException("RegisterClassExW failed");
         _hwnd = Native.CreateWindowExW(0, Native.SelfClassName, "Mobile Open Animation for Windows",
                                        0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
+        // So that the panel can tell the program is going away even if it is exited by something that never
+        // reaches its own menu: logoff, Task Manager, a crash in the tray.
+        BlacklistPanel.SetHost(_hwnd);
 
         // Registered before the icon is added, so the handler is armed before there is anything that could
         // be lost. Explorer broadcasts this to every top-level window when it builds its tray, which it
@@ -538,6 +552,10 @@ internal sealed class TrayHost
                     // them would put a burst of lines into the file every time Windows is told something.
                     if (area is "ImmersiveColorSet" or "WindowMetrics")
                         Moa.Log.Write($"WM_SETTINGCHANGE: {area}");
+                    // The user switched between light and dark while this program was running. uxtheme is told
+                    // again, which is what recolours the menu, and the panel - if it is open - styles itself
+                    // from the same answer when it hears this message.
+                    if (area == "ImmersiveColorSet") Native.DarkMode.Apply();
                     break;
                 }
 
@@ -626,11 +644,15 @@ internal sealed class TrayHost
         // A submenu rather than one more toggle among the animation ones, because what belongs under it is
         // any number of separate diagnostics and none of them is a setting in the sense the others are: an
         // entry is off by default, has nothing to do with how the program looks, and turning it on is a
-        // deliberate step taken to find out what the program is doing. One entry in it so far.
+        // deliberate step taken to find out what the program is doing.
+        //
+        // The blacklist goes under the switch rather than beside it, and it reads the log, so it has anything
+        // to show only once the switch has been on: what it lists is what debug mode recorded.
         var debug = Native.CreatePopupMenu();
         Native.AppendMenuW(debug, Native.MF_STRING |
             (Program.S.DebugMode ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuDebugEnable, Strings.T("DebugEnable"));
+        Native.AppendMenuW(debug, Native.MF_STRING, (IntPtr)Program.MenuBlacklist, Strings.T("Blacklist"));
         Native.AppendMenuW(menu, Native.MF_POPUP, debug, Strings.T("DebugMode"));
 
         Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuConfig, Strings.T("OpenConfig"));
@@ -639,6 +661,15 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuExit, Strings.T("Exit"));
 
         Native.GetCursorPos(out var p);
+
+        // The panel goes before the menu appears, and this is not tidiness. A popup menu is driven by the
+        // window that owns it only while that window is the foreground one, and the panel - modal, holding the
+        // focus - is not it. What happened was worse than a menu in the wrong place: the menu drew correctly
+        // and its items did nothing, Exit included, because the click went to a menu whose owner was not
+        // foreground and the shell discarded it. Nothing of ours may stand between the user and this menu, so
+        // the panel is closed first and synchronously: a posted close would still be in the queue here.
+        BlacklistPanel.Close();
+
         Native.SetForegroundWindow(_hwnd);
         int cmd = Native.TrackPopupMenu(menu, Native.TPM_RIGHTBUTTON | Native.TPM_RETURNCMD,
                                         p.X, p.Y, 0, _hwnd, IntPtr.Zero);

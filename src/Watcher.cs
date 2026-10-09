@@ -258,8 +258,7 @@ internal sealed class Watcher : IDisposable
         Native.GetClassNameW(hwnd, cls, 256);
         string className = cls.ToString();
         if (className == Native.SelfClassName) return null;
-        if (_s.ExcludedClasses.Any(c => string.Equals(c, className, StringComparison.OrdinalIgnoreCase)))
-            return null;
+        if (Settings.Matches(_s.ExcludedClasses, className)) return null;
 
         Native.GetWindowRect(hwnd, out var rc);
         int w = rc.Right - rc.Left, h = rc.Bottom - rc.Top;
@@ -288,8 +287,7 @@ internal sealed class Watcher : IDisposable
         string path = ProcessImagePath(pid);
         string name = Path.GetFileNameWithoutExtension(path);
         if (name.Length == 0) return null;
-        if (_s.ExcludedProcesses.Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
-            return null;
+        if (Settings.Matches(_s.ExcludedProcesses, name)) return null;
 
         // explorer.exe owns a lot of top-level windows that are shell plumbing rather than
         // "an app opening": the desktop, drag images, and the window behind the "How do you

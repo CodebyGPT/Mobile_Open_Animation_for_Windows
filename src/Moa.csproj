@@ -7,6 +7,22 @@
          See src/Net48Compat.cs for the small set of APIs this costs us. -->
     <TargetFramework>net48</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Bitness is deliberately not set here, and this comment is the note not to "fix" it. .NET Framework
+         projects are supposed to default Prefer32Bit to true, which would give an anycpu32bitpreferred exe -
+         CorFlags ILONLY|32BITREQUIRED|32BITPREFERRED, loaded as a 32-bit process. Measured, this project does
+         not get that default: it emits plain AnyCPU (CorFlags 0x00000001), which the CLR loads as 64-bit on
+         64-bit Windows and as 32-bit on 32-bit Windows. That is the wanted behaviour, and it is what the
+         shipped exe has always done.
+
+         Setting Prefer32Bit explicitly is worse than leaving it alone: the SDK resolves PlatformTarget from
+         it, and Prefer32Bit=false comes out as PlatformTarget=x86 - a true 32-bit build, the opposite of the
+         intent. Adding PlatformTarget=AnyCPU alongside happens to work but changes nothing that is not
+         already true. So: measure the CorFlags before believing any of this.
+
+         The PE header's IMAGE_FILE_32BIT_MACHINE bit is set on this exe and means nothing - csc sets it for
+         AnyCPU, and the CLR decides from the CorFlags, not from there. That bit is what made this look like a
+         32-bit build. -->
+
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>

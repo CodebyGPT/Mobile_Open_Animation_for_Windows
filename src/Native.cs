@@ -376,6 +376,323 @@ internal static class Native
     /// <summary>The shell's own window - the desktop, in practice - and through it the shell's process.</summary>
     [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
 
+    // ---- the blacklist panel: standard controls, so nothing there is drawn by us -------------
+    public const uint WM_SETFONT = 0x0030, WM_QUIT = 0x0012;
+    public const uint LB_ADDSTRING = 0x0180, LB_RESETCONTENT = 0x0184, LB_SETCURSEL = 0x0186,
+                      LB_GETCURSEL = 0x0188, LB_GETCOUNT = 0x018B, LB_GETTOPINDEX = 0x018E,
+                      LB_SETTOPINDEX = 0x0197, LB_SETHORIZONTALEXTENT = 0x0194;
+
+    public const uint WS_CHILD = 0x40000000, WS_VISIBLE = 0x10000000, WS_VSCROLL = 0x00200000,
+                      WS_HSCROLL = 0x00100000, WS_BORDER = 0x00800000, WS_TABSTOP = 0x00010000,
+                      WS_SYSMENU = 0x00080000,
+                      LBS_NOTIFY = 0x00000001, LBS_NOINTEGRALHEIGHT = 0x00000100;
+
+    public const int SW_SHOW = 5;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+
+    /// <summary>The same entry point with a string, which is what LB_ADDSTRING takes.</summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+    public static extern IntPtr SendMessageTextW(IntPtr h, uint msg, IntPtr w, string l);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SetWindowTextW(IntPtr h, string text);
+    [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsDialogMessageW(IntPtr h, ref MSG m);
+    [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+    [DllImport("user32.dll")] public static extern bool AdjustWindowRectEx(ref RECT r, uint style, bool menu,
+                                                                           uint exStyle);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadCursorW(IntPtr inst, IntPtr name);
+
+    /// <summary>
+    /// A window's monitor and the usable area of it. The panel is a fixed-size window, so it has to size
+    /// itself to the display it lands on rather than to the one it was designed on.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public uint CbSize;
+        public RECT RcMonitor, RcWork;
+        public uint DwFlags;
+    }
+
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+    public const uint SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
+
+    /// <summary>Sent when the window moves to a monitor with a different scale; the suggested rect is in lParam.</summary>
+    public const uint WM_DPICHANGED = 0x02E0;
+
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT p, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFO info);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+
+    /// <summary>
+    /// A font for those controls, at the window's own DPI. The stock GUI font would instead be the size 96 DPI
+    /// asked for, which is visibly too small on a scaled display - and being per monitor DPI aware, this
+    /// program knows better.
+    /// </summary>
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation,
+        int weight, uint italic, uint underline, uint strikeOut, uint charSet, uint outPrecision,
+        uint clipPrecision, uint quality, uint pitchAndFamily, string face);
+
+    public const int COLOR_WINDOW = 5;
+    public static readonly IntPtr IDC_ARROW = (IntPtr)32512;
+
+    /// <summary>A static asks its parent for the colours it should paint its text and background in.</summary>
+    public const uint WM_CTLCOLORSTATIC = 0x0138;
+
+    // ---- what the standard controls need from us: nothing of theirs is drawn here ----------------------
+    [DllImport("user32.dll")] public static extern bool EnableWindow(IntPtr h, bool enable);
+    /// <summary>Asking for a repaint is not drawing it: the window and its controls paint themselves.</summary>
+    [DllImport("user32.dll")] public static extern bool InvalidateRect(IntPtr h, IntPtr rect, bool erase);
+
+    public const uint WM_GETFONT = 0x0031;
+
+    /// <summary>
+    /// How wide a string is in a device context, which is a measurement and not a drawing: GDI returns a size
+    /// and paints nothing. Used to tell a list box how far its contents reach, because it will not work that
+    /// out for itself - see BlacklistPanel.Widen.
+    /// </summary>
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetTextExtentPoint32W(IntPtr dc, string text, int count, out SIZE size);
+
+    // ---- the About box: comctl32's task dialog, whose frame, icon and links are all the system's ------------
+    //
+    // A task dialog rather than the message box this used to be, for the one thing a message box cannot do: a
+    // link in the text that can be followed. TASKDIALOGCONFIG is declared Pack = 1 and that is not a guess:
+    // commctrl.h wraps it in pshpack1.h, and the size the packing produces is the one TaskDialogIndirect
+    // checks cbSize against. probe/aboutdialog measures it against the real call.
+
+    /// <summary>
+    /// The dialog's configuration. MainIcon and FooterIcon are unions in C - a handle with TDF_USE_HICON_*, a
+    /// MAKEINTRESOURCE pointer otherwise - which is why they are IntPtr here and not string.
+    ///
+    /// The button members are still here because the structure's layout is the ABI and cannot be shortened;
+    /// they are left zero, which is what "no custom buttons" is expressed as. TASKDIALOG_BUTTON is not declared
+    /// at all any more - there is nothing to point at.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+    public struct TASKDIALOGCONFIG
+    {
+        public uint CbSize;
+        public IntPtr HwndParent, HInstance;
+        public uint DwFlags, DwCommonButtons;
+        public string? PszWindowTitle;
+        public IntPtr MainIcon;
+        public string? PszMainInstruction, PszContent;
+        public uint CButtons;
+        public IntPtr PButtons;
+        public int NDefaultButton;
+        public uint CRadioButtons;
+        public IntPtr PRadioButtons;
+        public int NDefaultRadioButton;
+        public string? PszVerificationText, PszExpandedInformation, PszExpandedControlText,
+                       PszCollapsedControlText;
+        public IntPtr FooterIcon;
+        public string? PszFooter;
+        public TaskDialogCallback? PfCallback;
+        public IntPtr LpCallbackData;
+        public uint CxWidth;
+    }
+
+    /// <summary>
+    /// The one flag that closes a dialog with no button in it: Alt-F4, Esc and the title bar's X all work with
+    /// it and none of them do without it, so it is not optional here.
+    /// </summary>
+    public const uint TDF_ENABLE_HYPERLINKS = 0x0001, TDF_ALLOW_DIALOG_CANCELLATION = 0x0008;
+
+    public const uint TDN_HYPERLINK_CLICKED = 3;
+
+    /// <summary>
+    /// TD_INFORMATION_ICON, and it is 0xFFFD rather than -3 on purpose: MAKEINTRESOURCEW truncates to a WORD
+    /// and zero-extends, so the sign is gone by the time the system sees it. Passing (IntPtr)(-3) would be a
+    /// pointer into the top of the address space and the dialog would come up with no icon.
+    /// </summary>
+    public static readonly IntPtr TD_INFORMATION_ICON = (IntPtr)0xFFFD;
+
+    public delegate int TaskDialogCallback(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam,
+                                           IntPtr refData);
+
+    /// <summary>
+    /// Shows the dialog and returns when it is closed. A failed HRESULT means nothing was shown, which is
+    /// worth knowing about: the caller logs it rather than leaving a menu entry that appears to do nothing.
+    /// </summary>
+    [DllImport("comctl32.dll", CharSet = CharSet.Unicode)]
+    public static extern int TaskDialogIndirect(ref TASKDIALOGCONFIG config, out int button,
+                                                IntPtr radioButton, IntPtr verification);
+
+    /// <summary>The program's one way out to the browser, used by the About box's link.</summary>
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr ShellExecuteW(IntPtr hwnd, string operation, string file,
+                                              string? parameters, string? directory, int show);
+
+    public const int SW_SHOWNORMAL = 1;
+
+    /// <summary>
+    /// The system's dark theme, reached - on Windows 10 - through entry points in uxtheme.dll that Microsoft
+    /// never published. Ordinals rather than names for exactly that reason; every application that follows
+    /// the theme calls the same ones.
+    ///
+    /// Nothing here draws anything. A control that has opted in is still painted top to bottom by the system,
+    /// out of the system's own dark drawings; this only says which set to use.
+    /// </summary>
+    public static class DarkMode
+    {
+        /// <summary>
+        /// False on a build without the dark common-control theme at all, which is anything before 1809.
+        /// Ordinal 135 changed meaning in 1903 - from "is dark allowed" to "which app mode" - but a BOOL of
+        /// TRUE and an app mode of 2 are the same word, so one signature serves both.
+        /// </summary>
+        private static readonly bool Supported = Environment.OSVersion.Version.Build >= 17763;
+
+        /// <summary>Whether the system is asking applications to be dark, as of the last Apply.</summary>
+        public static bool On { get; private set; }
+
+        /// <summary>Created on first use and owned for the life of the process; a brush is not worth freeing at exit.</summary>
+        private static IntPtr _darkBrush = IntPtr.Zero;
+
+        [DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true)]
+        private static extern int SetPreferredAppMode(int mode);
+        [DllImport("uxtheme.dll", EntryPoint = "#136", SetLastError = true)]
+        private static extern void FlushMenuThemes();
+        [DllImport("uxtheme.dll", EntryPoint = "#133", SetLastError = true)]
+        private static extern bool AllowDarkModeForWindow(IntPtr hwnd, bool allow);
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetWindowTheme(IntPtr hwnd, string? subApp, string? subIdList);
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, uint attribute, ref int value, int size);
+
+        /// <summary>
+        /// Reads what the user asked for and hands it to uxtheme. Called once at start-up, before the first
+        /// window exists, and again when the theme is switched under a running program - uxtheme only takes
+        /// the preference while nothing has been made with the old one, so the order matters at start-up and
+        /// is why this is called from Run before the tray host is created.
+        /// </summary>
+        public static void Apply()
+        {
+            if (!Supported) return;
+            On = SystemIsDark();
+            try
+            {
+                // 2 forces dark and 0 hands the choice back to the system. Passing the answer rather than
+                // "dark may be allowed" is what makes both states certain, and it is what FlushMenuThemes
+                // then applies to menus that are already built.
+                SetPreferredAppMode(On ? 2 : 0);
+                FlushMenuThemes();
+            }
+            catch (Exception ex)
+            {
+                // A build without these ordinals, or a future one that moved them, keeps the light chrome it
+                // would have had anyway. A line in the log, not an error box.
+                Log.Write($"dark mode: uxtheme refused the opt-in ({ex.GetType().Name}); staying light");
+                On = false;
+            }
+        }
+
+        /// <summary>
+        /// Whether the user has asked for the dark app theme. Read from the registry rather than from the
+        /// undocumented ShouldAppsUseDarkMode, because this is the value the Settings page itself writes and
+        /// this program is already reading a neighbouring key of the same hive for the card's colours.
+        ///
+        /// A missing or unreadable value counts as light, which is the state a program that says nothing about
+        /// the theme gets anyway.
+        /// </summary>
+        private static bool SystemIsDark()
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+                return key?.GetValue("AppsUseLightTheme") is int light && light == 0;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Puts one window onto the theme this process opted into. Every top-level window has to be told, and
+        /// every control of it separately - and before it is first shown, which is why the callers do this in
+        /// their create paths rather than after.
+        /// </summary>
+        public static void Style(IntPtr hwnd)
+        {
+            if (!Supported || hwnd == IntPtr.Zero) return;
+            try
+            {
+                AllowDarkModeForWindow(hwnd, On);
+                SetWindowTheme(hwnd, On ? "DarkMode_Explorer" : "Explorer", null);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// The title bar and frame, which DWM draws and uxtheme cannot reach. Attribute 20 is the one since
+        /// 20H1 and 19 is the one before it; whichever the build knows is the one that answers 0.
+        /// </summary>
+        public static void Frame(IntPtr hwnd)
+        {
+            if (!Supported || hwnd == IntPtr.Zero) return;
+            int on = On ? 1 : 0;
+            if (DwmSetWindowAttribute(hwnd, 20, ref on, sizeof(int)) != 0)
+                DwmSetWindowAttribute(hwnd, 19, ref on, sizeof(int));
+        }
+
+        /// <summary>
+        /// The brush for the area of a window that no control covers, and for the background of a static. On
+        /// the light theme both of those come from the system colours; on the dark theme there is no dark
+        /// equivalent of COLOR_WINDOW to ask for, so the colour is named here - 32,32,32 is what the shell's
+        /// own dark surfaces use.
+        ///
+        /// This is the one choice in the theme support that is ours rather than the system's, and it is still
+        /// not drawing: a brush is handed back and the window or the control paints itself with it. Null on
+        /// the light theme, where the caller leaves the system's own colour in place.
+        /// </summary>
+        public static IntPtr BackgroundBrush()
+        {
+            if (!On) return IntPtr.Zero;
+            if (_darkBrush == IntPtr.Zero) _darkBrush = CreateSolidBrush(0x202020);
+            return _darkBrush;
+        }
+
+        /// <summary>Windows' dark surface text, for the same reason BackgroundBrush exists.</summary>
+        public const int DarkTextColour = 0xFFFFFF;
+    }
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateSolidBrush(int colour);
+
+    [DllImport("gdi32.dll")] public static extern int SetTextColor(IntPtr dc, int colour);
+    [DllImport("gdi32.dll")] public static extern int SetBkColor(IntPtr dc, int colour);
+
+    /// <summary>
+    /// GCLP_HBRBACKGROUND on a class that is already registered. Used to give a window a dark background brush
+    /// without registering the class a second time; the brush still belongs to the system, which is what paints
+    /// with it.
+    ///
+    /// Two entry points for one function, chosen at run time, and that is not belt-and-braces: 32-bit user32
+    /// exports SetClassLongW and has no SetClassLongPtrW at all, while on 64-bit only the Ptr one can carry a
+    /// handle. The C header hides this behind a macro; a DllImport cannot, so the test is here.
+    ///
+    /// The program normally takes the first arm - it builds as AnyCPU and so runs 64-bit on 64-bit Windows -
+    /// but it is still AnyCPU rather than x64, so a 32-bit Windows runs this code down the other one, and a
+    /// DllImport cannot be conditioned on anything at compile time.
+    /// </summary>
+    public static void SetClassBackground(IntPtr hwnd, IntPtr brush)
+    {
+        if (IntPtr.Size == 8) SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush);
+        else SetClassLongW(hwnd, GCLP_HBRBACKGROUND, brush);
+    }
+
+    public const int GCLP_HBRBACKGROUND = -10;
+
+    [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW")]
+    private static extern IntPtr SetClassLongPtrW(IntPtr hwnd, int index, IntPtr value);
+    [DllImport("user32.dll", EntryPoint = "SetClassLongW")]
+    private static extern uint SetClassLongW(IntPtr hwnd, int index, IntPtr value);
+
     // ---- the two rectangle passes whose cost is the card's area, done at the C runtime's speed ----------
     // A loop of stores, one pixel at a time, measured an order of magnitude slower than the same work done by
     // memset, and these are the two passes that still scale with the card: clearing what is about to be drawn,
