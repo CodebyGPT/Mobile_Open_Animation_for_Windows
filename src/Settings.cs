@@ -198,7 +198,27 @@ internal sealed class Settings
         sb.AppendLine("; whole processes (exe name without .exe); one per line, comma separated");
         sb.AppendLine("ExcludeProcesses=" + string.Join(",", ExcludedProcesses));
         File.WriteAllText(IniPath, sb.ToString(), Encoding.UTF8);
+        LogState("saved");
     }
+
+    /// <summary>
+    /// Writes what the program is set to do on one line, so that a log says which settings were in force and
+    /// at which moment they changed - which is what a run of frames has to be read against.
+    ///
+    /// Called from Save, which every menu entry goes through and which the regenerated file ends in, and once
+    /// at startup. Deliberately not per animation: the settings a frame used are the ones in force since the
+    /// last line, and a copy per frame would bury everything else in the file.
+    /// </summary>
+    public void LogState(string why)
+    {
+        Log.Write($"settings ({why}): lang={Language} duration={DurationMs}ms handoffFade={HandoffFadeMs}ms" +
+                  $" startSize={StartSizePx} close={OnOff(CloseAnimation)}" +
+                  $" dynamicCorner={OnOff(DynamicCorner)} returnToOrigin={OnOff(ReturnToOrigin)}" +
+                  $" debug={OnOff(DebugMode)} excluded={ExcludedClasses.Count} classes," +
+                  $" {ExcludedProcesses.Count} processes");
+    }
+
+    private static string OnOff(bool v) => v ? "on" : "off";
 
     private static void AddList(List<string> into, string csv)
     {
