@@ -141,9 +141,7 @@ internal sealed class Settings
     public void Save()
     {
         var sb = new StringBuilder();
-        // The build identity on the first line, because the first thing anyone does with a settings file from
-        // someone else's machine is ask which build wrote it, and it is also what the log's file name says.
-        sb.AppendLine($"; Mobile Open Animation for Windows {Build.Version} - window open animation, standalone");
+        sb.AppendLine("; Mobile Open Animation for Windows - window open animation, standalone");
         sb.AppendLine("; The tray menu edits the entries marked [menu]; edit the rest here.");
         sb.AppendLine("; NOTE: Start with Windows is deliberately NOT stored in this file. The state is");
         sb.AppendLine("; whether the scheduled task exists, read from the Task Scheduler, and a copy here");
