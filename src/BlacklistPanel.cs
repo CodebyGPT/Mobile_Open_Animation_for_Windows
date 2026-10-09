@@ -313,14 +313,10 @@ internal static class BlacklistPanel
         Reload(_rulesBox, _ruleText, _sel == Sel.Rule ? _selIndex : -1);
         _suppress = false;
 
-        // The line above the Close button, and the only one of the panel's two messages it can hold. The empty
-        // one wins while the list really is empty, because that is the one moment it is the more useful of the
-        // two - it says what to do next, where the hint only says that closing is safe. The rest of the time
-        // the hint stands, which is what this line is for: without it a 400-pixel window spends most of its
-        // life with a blank space in the middle of it.
-        Native.SetWindowTextW(_empty, _candidates.Count == 0
-            ? Strings.T("BlacklistEmpty")
-            : Strings.T("BlacklistCloseHint"));
+        // The line above the Close button, which carries the one thing this window has to say: what to do about
+        // a list that is still empty. Closing needs no explanation - the button says it - so the rest of the
+        // time the line is blank.
+        Native.SetWindowTextW(_empty, _candidates.Count == 0 ? Strings.T("BlacklistEmpty") : "");
 
         // The newest rule is at the end of a list that may be scrolled past the fold. After a change that
         // lands there the panel selects it and brings it into view: the user pressed a button, and an answer

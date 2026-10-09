@@ -369,11 +369,6 @@ internal static class Strings
         ["BlacklistDisabled"] = ("[disabled]", "[已禁用]"),
         ["BlacklistBuiltIn"] = ("[built-in rule]", "[内置规则]"),
         ["BlacklistCovered"] = ("[covered by the process rule]", "[已被进程规则覆盖]"),
-        // Shown in the line of text above the Close button - not in a tooltip. There is already a static
-        // there, and a bubble that has to be hovered is a worse way to say a thing this short.
-        ["BlacklistCloseHint"] =
-            ("All changes are saved and take effect immediately. You can close this window at any time.",
-             "所有改动均已自动保存并即刻生效，可随时关闭本窗口"),
         ["BlacklistClass"] = ("class", "窗口类"),
         ["BlacklistProcess"] = ("process", "进程"),
         ["BlacklistEmpty"] = ("Nothing in the log yet. Turn Debug mode on, reproduce it once, then open "
