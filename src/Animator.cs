@@ -480,7 +480,12 @@ internal sealed class Animator
         // running side by side: the rounding is at its roundest when the card is at its smallest, and it
         // straightens out in step with everything else.
         int rad = (int)Math.Round(a.StartRadius + (a.TargetRadius - a.StartRadius) * e);
-        _thread!.RequestFrame(a.Panel, x, y, w, h, 255, rad);
+        // Handed over rather than merely asked for, when the panel is not up yet: the thread draws this one as
+        // part of creating the panel, in the iteration it is already in, instead of after it. The frame is
+        // asked for as well either way, because the handover loses a race with the thread's own creation step
+        // and a frame that arrives twice costs one draw where a frame that arrives never costs the seam.
+        _thread!.HandOverFirst(a.Panel, x, y, w, h, 255, rad);
+        _thread.RequestFrame(a.Panel, x, y, w, h, 255, rad);
         return t;
     }
 
