@@ -188,7 +188,27 @@ internal sealed class Animator
     /// Every measured value is logged, so it can be re-tuned from real numbers instead of
     /// guessed at.
     /// </summary>
-    private const int VisibleForTooLongMs = 5;
+    /// <summary>
+    /// How long a window may have been on screen before the animation is abandoned: one composed frame.
+    ///
+    /// That is what the question is really about - was the window presented at least once, so that the user
+    /// could have seen it - and it is a property of the display rather than a number to choose. It used to be
+    /// a constant of 5 ms, which is less than a frame on a 60 Hz display (16.7 ms) and more than one on a
+    /// 165 Hz display: on 60 Hz it abandoned animations nobody had seen, and on a fast display it let through
+    /// a window that had already been presented. The cadence is measured at startup from the compositor and is
+    /// the same one frames are paced by, so the two cannot disagree.
+    ///
+    /// Floored, so the rule is "strictly more than one frame": a window that was visible for exactly one frame
+    /// period may or may not have been composited, and the animation is worth more than that doubt.
+    /// </summary>
+    private int VisibleLimitMs
+    {
+        get
+        {
+            double frame = _thread?.FrameMs ?? 1000.0 / 60.0;
+            return Math.Max(1, (int)Math.Floor(frame));
+        }
+    }
 
     /// <summary>
     /// How often the hide is re-asserted, in milliseconds. See the note where it is used: this is a
@@ -381,9 +401,23 @@ internal sealed class Animator
 
         // Unsigned subtraction, so this stays correct when the 32-bit tick count wraps.
         int visibleForMs = unchecked((int)(hiddenAt - eventTime));
-        if (visibleForMs <= VisibleForTooLongMs)
+        if (visibleForMs <= VisibleLimitMs)
         {
-            Log.Write($"hwnd={hwnd} showed {visibleForMs} ms before we hid it; in time");
+            Log.Write($"hwnd={hwnd} showed {visibleForMs} ms before we hid it; in time (a frame is" +
+                      $" {VisibleLimitMs} ms)");
+            // The animation is going to be played, and this is the earliest the program can know the window
+            // is on screen: start it here and ask for its first frame at once, rather than leaving both to
+            // the next tick. See MarkBecameVisible for what that pass costs.
+            for (int i = _active.Count - 1; i >= 0; i--)
+            {
+                var a = _active[i];
+                if (a.Target.Hwnd != hwnd || a.Phase != 0 || a.BecameVisible) continue;
+                if (!Native.IsWindowVisible(hwnd)) break;
+                long now = Compat.TickCount64;
+                MarkBecameVisible(a, now);
+                RequestGrowFrame(a, now);
+                break;
+            }
             return;
         }
 
@@ -392,11 +426,62 @@ internal sealed class Animator
             var a = _active[i];
             if (a.Target.Hwnd != hwnd) continue;
 
-            Log.Write($"hwnd={hwnd} was on screen {visibleForMs} ms before we hid it " +
-                      $"(limit {VisibleForTooLongMs} ms); cancelling this animation");
+            Log.Write($"hwnd={hwnd} was on screen {visibleForMs} ms before we hid it, which is more than" +
+                      $" one frame ({VisibleLimitMs} ms); cancelling this animation");
             a.Cancelled = true;
             return;
         }
+    }
+
+    /// <summary>
+    /// The window has appeared, which is where an opening animation starts.
+    ///
+    /// Called from whichever notices first: the tick that polls for it, or the window's own show event. The
+    /// event says the same thing up to a message-loop pass earlier, and that pass is what the card's first
+    /// frame costs - measured, the first frame landed 12-23 ms after the window appeared when the tick found
+    /// it. Starting from the event is the opening animation's half of what the closing one already has as
+    /// FirstFrame: the frame handed over with the panel instead of waiting for a tick.
+    /// </summary>
+    private void MarkBecameVisible(Anim a, long now)
+    {
+        a.BecameVisible = true;
+        a.Started = now;                  // the animation starts when it appears
+        // This, not being accepted as a candidate, is the moment a window really had an opening animation -
+        // and the only moment at which it may be allowed a closing one. See Watcher.Remember.
+        OnBecameVisible?.Invoke(a.Target.Hwnd, a.Target.Pid);
+        RememberOrigin(a);
+        Log.Write($"hwnd={a.Target.Hwnd} became visible; animation starts now");
+    }
+
+    /// <summary>
+    /// Asks the animation thread for the frame this moment's geometry calls for, and answers how far through
+    /// the grow it is. Shared by the tick and by the show event, which is the point of it: the same geometry
+    /// from either, so that starting the animation from the event cannot disagree with the frames after it.
+    ///
+    /// The card is opaque from this, its first frame. It used to fade in over 48 ms - which is what the mod
+    /// does as fadeInPercent, and it was copied here to keep the animation from starting with a cut - but
+    /// those 48 ms are 48 ms in which nothing is on screen at all, and by then the window has already gone:
+    /// measured, the first frame lands 12-23 ms after the window appears, so the card was invisible for up to
+    /// 70 ms. A cut to a card the size of an icon is not the moment that needed softening; the handoff at the
+    /// other end is, and that one has its own fade.
+    /// </summary>
+    private double RequestGrowFrame(Anim a, long now)
+    {
+        double t = Compat.Clamp((now - a.Started) / (double)a.Duration, 0, 1);
+        double e = Ease(t);
+        var tgt = TargetRect(a.Target.Hwnd);          // live, every frame
+        int tw = tgt.Right - tgt.Left, th = tgt.Bottom - tgt.Top;
+        int x = (int)Math.Round(a.AnchorX + (tgt.Left - a.AnchorX) * e);
+        int y = (int)Math.Round(a.AnchorY + (tgt.Top - a.AnchorY) * e);
+        int w = (int)Math.Round(a.StartSize + (tw - a.StartSize) * e);
+        int h = (int)Math.Round(a.StartSize + (th - a.StartSize) * e);
+        // The corner is interpolated along the card's own curve, which is what the mod does
+        // (mobile-open-animation.wh.cpp:2800) and what makes the two things one movement rather than two
+        // running side by side: the rounding is at its roundest when the card is at its smallest, and it
+        // straightens out in step with everything else.
+        int rad = (int)Math.Round(a.StartRadius + (a.TargetRadius - a.StartRadius) * e);
+        _thread!.RequestFrame(a.Panel, x, y, w, h, 255, rad);
+        return t;
     }
 
     /// <summary>
@@ -769,10 +854,11 @@ internal sealed class Animator
             int earlyMs = unchecked((int)(hiddenAt - shownAt));
             if (earlyMs >= 0 && earlyMs <= ShowBeforeHideMaxAgeMs)
             {
-                if (earlyMs > VisibleForTooLongMs)
+                if (earlyMs > VisibleLimitMs)
                 {
                     Log.Write($"hwnd={w.Hwnd} showed {earlyMs} ms before the hide finished, and its show " +
-                              $"event came first (limit {VisibleForTooLongMs} ms); not animating at all");
+                              $"event came first (more than one frame, {VisibleLimitMs} ms);" +
+                              $" not animating at all");
                     // This window is not going to be animated, so there is nothing left to judge about it.
                     // Clearing it here keeps a later show event - the window being minimized and restored,
                     // say - from measuring itself against this hide and reaching a conclusion about an
@@ -971,54 +1057,15 @@ internal sealed class Animator
                         }
                         break;
                     }
-                    if (!a.BecameVisible)
-                    {
-                        a.BecameVisible = true;
-                        a.Started = now;                  // the animation starts when it appears
-                        // This, not being accepted as a candidate, is the moment a window really had an
-                        // opening animation - and the only moment at which it may be allowed a closing
-                        // one. See Watcher.Remember.
-                        OnBecameVisible?.Invoke(a.Target.Hwnd, a.Target.Pid);
-                        RememberOrigin(a);
-                        Log.Write($"hwnd={a.Target.Hwnd} became visible; animation starts now");
-                    }
+                    if (!a.BecameVisible) MarkBecameVisible(a, now);
 
-                    double t = Compat.Clamp((now - a.Started) / (double)a.Duration, 0, 1);
-                    double e = Ease(t);
-                    var tgt = TargetRect(a.Target.Hwnd);          // live, every frame
-                    int tw = tgt.Right - tgt.Left, th = tgt.Bottom - tgt.Top;
-                    int x = (int)Math.Round(a.AnchorX + (tgt.Left - a.AnchorX) * e);
-                    int y = (int)Math.Round(a.AnchorY + (tgt.Top - a.AnchorY) * e);
-                    int w = (int)Math.Round(a.StartSize + (tw - a.StartSize) * e);
-                    int h = (int)Math.Round(a.StartSize + (th - a.StartSize) * e);
-                    // The corner is interpolated along the card's own curve, which is what the mod does
-                    // (mobile-open-animation.wh.cpp:2800) and what makes the two things one movement rather
-                    // than two running side by side: the rounding is at its roundest when the card is at its
-                    // smallest, and it straightens out in step with everything else. It had a linear curve
-                    // of its own for one revision - so that the corner would still be arriving while the card
-                    // settled - and that was given up for this, because two curves read as two animations.
-                    int rad = (int)Math.Round(a.StartRadius + (a.TargetRadius - a.StartRadius) * e);
-                    // The card fades in over its first few frames rather than appearing at full opacity,
-                    // because at full opacity from the first frame the whole animation reads as starting
-                    // with a cut. The mod has the same thing as fadeInPercent, suggesting 10-20 per cent of
-                    // the duration and defaulting to 0 - no fade at all, "the icon appears instantly, the
-                    // way a phone does". At the 240 ms this program uses, that suggestion is 24-48 ms, and
-                    // the top of it is taken here.
-                    //
-                    // A fixed time rather than a percentage of the duration, which is the one deliberate
-                    // difference: the growth is front-loaded - measured, 43 per cent of the distance is
-                    // covered in the first 17 per cent of the time - so a percentage would leave a long
-                    // animation still washing in after it had finished moving, which is the one thing the
-                    // mod's own note warns against.
-                    const int FadeInMs = 48;
-                    int alpha = FadeInMs <= 0
-                        ? 255
-                        : (int)Math.Round(255.0 * Math.Min(1.0, (now - a.Started) / (double)FadeInMs));
-                    _thread.RequestFrame(a.Panel, x, y, w, h, alpha, rad);
+                    double t = RequestGrowFrame(a, now);
                     if (t >= 1.0)
                     {
+                        var tgt = TargetRect(a.Target.Hwnd);
                         a.Phase = 1; a.PhaseStarted = now;
-                        Log.Write($"hwnd={a.Target.Hwnd} grow done at {tw}x{th} ({tgt.Left},{tgt.Top}), waiting for paint");
+                        Log.Write($"hwnd={a.Target.Hwnd} grow done at {tgt.Right - tgt.Left}x{tgt.Bottom - tgt.Top}" +
+                                  $" ({tgt.Left},{tgt.Top}), waiting for paint");
                     }
                     break;
                 }

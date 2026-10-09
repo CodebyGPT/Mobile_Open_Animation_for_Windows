@@ -120,6 +120,15 @@ internal sealed class AnimationThread
     /// <summary>How long one frame of the display lasts. Asked of the display once; see DetectRefresh.</summary>
     private double _frameMs = 1000.0 / 60.0;
 
+    /// <summary>
+    /// One frame of the display, in milliseconds, as measured from the compositor's own cadence.
+    ///
+    /// Read by the animation to decide whether a window had been on screen long enough for the user to have
+    /// seen it: at least one presented frame. That question is about the display, not about a number, and
+    /// this is the same cadence the frames themselves are paced by, so the two cannot disagree.
+    /// </summary>
+    public double FrameMs => _frameMs;
+
     /// <summary>Whether the system timer resolution is currently raised, and has to be lowered again.</summary>
     private bool _timerRaised;
 
