@@ -364,6 +364,15 @@ internal static class Native
     [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 
+    /// <summary>The display's mode changing: resolution, colour depth, or a monitor arriving or leaving.</summary>
+    public const uint WM_DISPLAYCHANGE = 0x007E;
+
+    /// <summary>
+    /// Sent to every top-level window when something about the system's settings changes; the lParam names
+    /// what changed. Only two of those names are this program's business, and Program.cs says which and why.
+    /// </summary>
+    public const uint WM_SETTINGCHANGE = 0x001A;
+
     /// <summary>The shell's own window - the desktop, in practice - and through it the shell's process.</summary>
     [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
 

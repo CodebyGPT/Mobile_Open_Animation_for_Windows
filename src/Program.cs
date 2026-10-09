@@ -123,6 +123,9 @@ internal static class Program
         Log.On = _s.DebugMode;
         Log.Start("startup");
         Log.Write($"pid={Native.GetCurrentProcessId()} lang={_s.Language} ini={Settings.IniPath}");
+        // The configuration this run starts from, so that a log is readable on its own: what was in force
+        // and when it changed, rather than what a later reader has to infer from the ini's current state.
+        _s.LogState("startup");
         Log.Write($"NOTIFYICONDATAW size={Marshal.SizeOf<NOTIFYICONDATAW>()} (the shell expects 976 on x64)");
         // UIPI: we can only touch windows of processes at the same or a lower integrity
         // level, and Shell_NotifyIcon is a message to Explorer's tray window, which is
@@ -201,8 +204,32 @@ internal static class Program
         return 0;
     }
 
+    /// <summary>
+    /// A tray menu entry's name, for the log. The ids are internal and would mean nothing to whoever reads
+    /// the file later; the names are the ones the user clicked on.
+    /// </summary>
+    private static string MenuName(int id) => id switch
+    {
+        MenuLangEn => "Language: English",
+        MenuLangZh => "Language: Chinese",
+        MenuAutoStart => "Start with Windows",
+        MenuConfig => "Open config directory",
+        MenuAbout => "About",
+        MenuExit => "Exit",
+        MenuCloseAnim => "Window close animation",
+        MenuDynCorner => "Dynamic corner radius",
+        MenuReturnOrigin => "Desktop return animation",
+        MenuDebugEnable => "Debug mode",
+        _ => $"unknown ({id})",
+    };
+
     internal static void OnMenu(int id)
     {
+        // What the user did, written before what it did. A session read later has to say which entry was
+        // clicked, and that is true of the entries that change nothing as much as of the ones that do: a
+        // click refused because the system's animations are off, or the entry for the language already in
+        // force, leaves the settings exactly as they were and would otherwise leave no trace at all.
+        Log.Write($"menu: {MenuName(id)}");
         switch (id)
         {
             case MenuLangEn: _s.Language = Lang.English; Strings.Use(_s.Language); _s.Save(); break;
@@ -216,6 +243,15 @@ internal static class Program
                 _s.DynamicCorner = !_s.DynamicCorner; _s.Save(); break;
             case MenuReturnOrigin:
                 if (!Native.SystemAnimationsEnabled()) break;
+                // Refused as well as greyed, and for the same reason the system-animation toggles are: a menu
+                // drawn before the close animation was switched off can still deliver this click, and the
+                // return is the tail of a close animation that is no longer being played. Said out loud,
+                // because the log otherwise shows an entry that was clicked and nothing that came of it.
+                if (!_s.CloseAnimation)
+                {
+                    Log.Write("  refused: the window close animation is off, and the return is part of it");
+                    break;
+                }
                 _s.ReturnToOrigin = !_s.ReturnToOrigin; _s.Save(); break;
             case MenuDebugEnable:
             {
@@ -446,6 +482,10 @@ internal sealed class TrayHost
         if (_hwnd != IntPtr.Zero) { Native.DestroyWindow(_hwnd); _hwnd = IntPtr.Zero; }
     }
 
+    /// <summary>
+    /// The tray host's window procedure: the icon's messages, the menu they open, the watchdog and the
+    /// environment changing underneath.
+    /// </summary>
     private IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr w, IntPtr l)
     {
         try
@@ -478,6 +518,28 @@ internal sealed class TrayHost
                 case Native.WM_COMMAND:
                     Program.OnMenu((int)(w.ToInt64() & 0xFFFF));
                     return IntPtr.Zero;
+
+                // The environment changing under a program that is already running: a session that moves
+                // between monitors, changes resolution, or switches between light and dark. Nothing here is
+                // cached that could go stale - the monitor under a window, its DPI and the card's colours are
+                // all asked for when they are needed - so these are recorded rather than acted on. They are
+                // the moments an oddity later in the file has to be read against.
+                case Native.WM_DISPLAYCHANGE:
+                    Moa.Log.Write($"WM_DISPLAYCHANGE: {w.ToInt64() & 0xFF} bpp," +
+                                  $" {l.ToInt64() & 0xFFFF}x{(l.ToInt64() >> 16) & 0xFFFF}");
+                    break;
+
+                case Native.WM_SETTINGCHANGE:
+                {
+                    string area = l == IntPtr.Zero ? "" : Marshal.PtrToStringUni(l) ?? "";
+                    // Two of the dozens of reasons this message is broadcast are this program's business:
+                    // the colours the card is drawn in, and the metrics a window's frame is measured with.
+                    // The rest - a policy, a locale, an environment variable - are not, and logging all of
+                    // them would put a burst of lines into the file every time Windows is told something.
+                    if (area is "ImmersiveColorSet" or "WindowMetrics")
+                        Moa.Log.Write($"WM_SETTINGCHANGE: {area}");
+                    break;
+                }
 
                 case Native.WM_TIMER:
                     // The safety watchdog. It runs whether or not anything is animating, which is
@@ -538,13 +600,21 @@ internal sealed class TrayHost
         // Their values are left alone, so they come back exactly as they were.
         uint animationGroup = Native.SystemAnimationsEnabled() ? 0u : Native.MF_GRAYED;
 
+        // And the return animation goes grey when the close animation is off, for the same reason and with
+        // the same treatment. It is not an animation of its own: it is the last part of a closing card, so
+        // with closing switched off there is nothing for it to happen in and it can neither be changed nor
+        // be said to be on. Its value is left alone, so switching closing back on restores whatever it was.
+        uint returnGroup = animationGroup != 0 || !Program.S.CloseAnimation
+            ? Native.MF_GRAYED
+            : 0u;
+
         Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
             (Program.S.CloseAnimation ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuCloseAnim, Strings.T("CloseAnim"));
         Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
             (Program.S.DynamicCorner ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuDynCorner, Strings.T("DynamicCorner"));
-        Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
+        Native.AppendMenuW(menu, Native.MF_STRING | returnGroup |
             (Program.S.ReturnToOrigin ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuReturnOrigin, Strings.T("ReturnToOrigin"));
         Native.AppendMenuW(menu, Native.MF_SEPARATOR, IntPtr.Zero, "");
