@@ -15,3 +15,5 @@ probe/chromeprofile*/
 
 # the upstream snapshot downloaded for comparison: it belongs to that project, not this one
 new/
+# working notes and artwork kept beside the source rather than in it
+icon/

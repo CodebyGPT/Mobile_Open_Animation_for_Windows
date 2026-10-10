@@ -9,6 +9,7 @@
 //   * grow our own topmost panel from the click point to the window rect, carrying the icon
 //   * once the app has painted, fade the panel out and put the real window back
 
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -19,7 +20,8 @@ internal static class Program
 {
     internal const int MenuLangEn = 1, MenuLangZh = 2, MenuAutoStart = 3,
                        MenuConfig = 4, MenuAbout = 5, MenuExit = 6, MenuCloseAnim = 7,
-                       MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10, MenuBlacklist = 11;
+                       MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10, MenuBlacklist = 11,
+                       MenuAdsWindow = 13, MenuAdsBootAd = 16, MenuDebugBootAd = 17;
 
     private static Settings _s = null!;
     internal static Settings S => _s;
@@ -175,6 +177,7 @@ internal static class Program
         // a closing one.
         _anim.OnAbandoned = _watcher.Forget;
         _anim.OnBecameVisible = _watcher.Remember;
+        _anim.OnHandoff = OnHandoff;
         _watcher.Start();
 
         // Whatever happens, nothing stays hidden.
@@ -201,6 +204,11 @@ internal static class Program
         // state, because a menu item that silently turns the program off is a support question.
         _host.Notify($"Mobile Open Animation for Windows: watching (pid {Native.GetCurrentProcessId()})");
 
+        // The logon advertisement, if it is due. It runs on this thread like everything else - the card's
+        // timer arrives in the message loop below - so it goes up before the loop starts and its countdown is
+        // served by it.
+        ShowBootAdIfDue();
+
         _host.RunMessageLoop();
 
         _watcher.Dispose();
@@ -208,6 +216,210 @@ internal static class Program
         _guard.ReleaseAll();
         _host.Destroy();
         return 0;
+    }
+
+    /// <summary>
+    /// The window advertisement: called the moment an opening animation has finished, with the window and the
+    /// rectangle the card stopped at. Returning a window puts it over that rectangle; returning nothing leaves
+    /// the application to be revealed as it always was.
+    ///
+    /// One rule decides it: **a program gets one advertisement, ever**. It was written as "a process gets one"
+    /// first, and that is not the same rule - PowerToys' image resizer is one process per showing, so opening
+    /// it twice played the advertisement twice, and its window is not PowerToys' main window either. What the
+    /// rule is about is the program, so the program is what is remembered; see ProgramName. The main window
+    /// gets it for the same reason as before - the first window of a program is its main one - and a dialog,
+    /// a sub-feature or a second copy of the same program is refused, because it is the same program.
+    ///
+    /// Windows that never animate - which includes every blacklisted one, since those never reach an animation
+    /// at all - are not offered one, because this is only ever called from an animation.
+    /// </summary>
+    private static IntPtr OnHandoff(IntPtr hwnd, uint pid, RECT rect, int radius)
+    {
+        if (!Ads.Allowed(_s.AdsVisible) || !_s.WindowAd) return IntPtr.Zero;
+
+        string program = ProgramName(pid);
+        if (_adsShown.Contains(program))
+        {
+            Log.Write($"ads: {program} has already had its advertisement; none for hwnd={hwnd}");
+            return IntPtr.Zero;
+        }
+
+        string[] videos = Ads.Videos();
+        if (videos.Length == 0) return IntPtr.Zero;
+
+        bool muted = _s.AdsMuted;
+        WireCard(radius);
+
+        var card = AdsCard.ShowOver(rect, videos, Ads.CapSeconds, muted, _s.CloseAnimation);
+        if (card == null) return IntPtr.Zero;
+
+        // The window an advertisement covers is hidden while it is covered. That is what the feature is: an
+        // advertisement in place of a window, not in front of one - and it is also the only arrangement in
+        // which the Z-order cannot matter, because a card over a hidden window is the advertisement whatever
+        // band the card ends up in. Said here rather than at the handoff because this is the program's own
+        // decision about its own feature; the animator only needs to be told not to put the window back yet.
+        //
+        // The hold is what keeps the guard's watchdog from giving the window back mid-advertisement: the
+        // watchdog's deadline is twenty seconds and the cap is six minutes, so without it a long advertisement
+        // would be sitting over a window that had quietly come back.
+        _anim.KeepHidden = hwnd;
+        _anim.HeldWindow = hwnd;
+        _guard.Hold(hwnd, Ads.CapSeconds * 1000 + 5000);
+        card.WhileUp = _anim.KeepHeldWindowHidden;
+        // The window comes along when the advertisement is dragged. It is invisible while this happens, and that
+        // is the point: the advertisement is meant to be the window, so the two being in different places is
+        // something the user would only notice when the advertisement ends. See Animator.MoveHeldWindow.
+        card.Moved = _anim.MoveHeldWindow;
+        card.Closed = () =>
+        {
+            Log.Write($"ads: the advertisement is gone; releasing hwnd={hwnd}");
+            _anim.HeldWindow = IntPtr.Zero;
+            _guard.Release(hwnd);
+        };
+
+        _adsShown.Add(program);
+        Log.Write($"ads: window advertisement for {program} (pid {pid}) hwnd={hwnd} at " +
+                  $"{rect.Left},{rect.Top} {rect.Right - rect.Left}x{rect.Bottom - rect.Top}," +
+                  $" muted={muted} radius={radius}");
+        return card.Hwnd;
+    }
+
+    /// <summary>
+    /// The programs that have had their one advertisement. A name rather than a process id, because it is the
+    /// program the rule is about, and a name that two processes of one program agree on: ProductName is the
+    /// field Windows keeps for exactly this and PowerToys' own two executables both call themselves PowerToys,
+    /// which is the case this went wrong on. Programs that leave it blank - many do - fall back to the path of
+    /// the executable, which is the same answer for them as long as they do not ship two of them.
+    ///
+    /// In memory and deliberately not in the file: the feature is meant to start again from nothing when the
+    /// program restarts, and a record that outlived the run would be a record of everything the user has ever
+    /// opened.
+    /// </summary>
+    private static readonly HashSet<string> _adsShown = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Who each process turned out to be. Asked once per process, not once per window it opens.</summary>
+    private static readonly Dictionary<uint, string> _programOf = new();
+
+    private static string ProgramName(uint pid)
+    {
+        if (_programOf.TryGetValue(pid, out string? known)) return known;
+
+        string name = $"pid {pid}";
+        try
+        {
+            string path = Process.GetProcessById((int)pid).MainModule?.FileName ?? "";
+            if (path.Length > 0)
+            {
+                string product = FileVersionInfo.GetVersionInfo(path).ProductName?.Trim() ?? "";
+                name = product.Length > 0 ? product : path;
+            }
+        }
+        // A process that has gone, or one this program is not allowed to look at. Falling back to the id keeps
+        // the advertisement working and keeps it to one per process, which is weaker than the rule but never
+        // wrong in the direction that annoys: it cannot play one that should not have been played.
+        catch (Exception ex)
+        {
+            Log.Write($"ads: pid {pid} would not say which program it is ({ex.GetType().Name}); using its id");
+        }
+
+        _programOf[pid] = name;
+        return name;
+    }
+
+    /// <summary>
+    /// Puts the logon advertisement up, if this run has earned one.
+    ///
+    /// Asked of the same function that decides whether the menu's logon-ad entry can be clicked, rather than of
+    /// a second copy of its conditions: a program whose menu says the switch is frozen must not then run one
+    /// anyway, and the two going out of step is a mistake this codebase has already made once with the logon
+    /// task.
+    /// </summary>
+    private static void ShowBootAdIfDue() => PlayBootAd(forced: false);
+
+    /// <summary>
+    /// Hands the card everything that comes from the settings rather than from the card itself: where it says
+    /// what it is doing, what its mute control says, where to write down a mute the user asked for, and how it
+    /// goes away.
+    ///
+    /// The collapse follows the program's own closing cards rather than a second opinion: the length is the
+    /// animation length in the ini, the frame is the display's, the curve is the one its own animations move
+    /// on, and whether it rounds off into a disc is the dynamic-corner switch. <paramref name="radius" /> is
+    /// the corner the opening animation's card ended on, handed over by the animator, and is what the
+    /// advertisement wears while it is up - zero for the logon advertisement, whose card is its own.
+    /// </summary>
+    private static void WireCard(int radius)
+    {
+        AdsCard.Trace = Log.Write;
+        AdsCard.CaptionMute = Strings.T("AdsMute");
+        AdsCard.CaptionUnmute = Strings.T("AdsUnmute");
+        AdsCard.CaptionRemaining = Strings.T("AdsRemaining");
+        AdsCard.CaptionSkip = Strings.T("AdsSkip");
+        AdsCard.MuteRemembered = m => { _s.AdsMuted = m; _s.Save(); };
+        AdsCard.Curve = Animator.Ease;
+        AdsCard.CollapseMs = _s.DurationMs;
+        AdsCard.FrameMs = (int)Math.Round(_anim.FrameMs);
+        AdsCard.Radius = radius;
+        AdsCard.RoundOff = _s.DynamicCorner;
+    }
+
+    /// <summary>
+    /// Puts the logon advertisement up.
+    ///
+    /// Asked of the same function that decides whether the menu's logon-ad entry can be clicked, rather than of
+    /// a second copy of its conditions: a program whose menu says the switch is frozen must not then run one
+    /// anyway, and the two going out of step is a mistake this codebase has already made once with the logon
+    /// task.
+    ///
+    /// <paramref name="forced" /> skips those conditions and nothing else - the Debug menu's entry runs one
+    /// however the logon task and the logon-advertisement switch are set, because looking at the advertisement
+    /// is the only thing that entry is for. What it cannot skip is the folder being empty, which is the one
+    /// condition that is not a setting but a fact, and the submenu being hidden - see Ads.Allowed, which is a
+    /// rule about the two switches rather than one of their conditions.
+    ///
+    /// The mute is whatever the last one was left at, which the mute control keeps up to date.
+    /// </summary>
+    private static void PlayBootAd(bool forced)
+    {
+        if (!Ads.Allowed(_s.AdsVisible))
+        {
+            Log.Write("ads: the advertisement submenu is hidden, so neither of the two switches is acted on");
+            return;
+        }
+
+        if (!forced)
+        {
+            var ads = Ads.Menu(Ads.Available, AutoStartOn, _s.WindowAd, _s.BootAd);
+            if (!ads.BootAdUsable || !ads.BootAd)
+            {
+                Log.Write($"ads: no logon advertisement (bootAd={ads.BootAd} usable={ads.BootAdUsable})");
+                return;
+            }
+        }
+
+        string[] videos = Ads.Videos();
+        if (videos.Length == 0)
+        {
+            Log.Write($"ads: the logon advertisement is due but Ads is empty ({Ads.Folder})");
+            return;
+        }
+
+        bool muted = _s.AdsMuted;
+        WireCard(0);
+        Log.Write($"ads: {videos.Length} videos, logon advertisement for at most " +
+                  $"{Ads.CapSeconds}s, muted={muted}{(forced ? ", asked for from Debug mode" : "")}");
+        var card = AdsCard.ShowBoot(videos, Ads.CapSeconds, muted, _s.CloseAnimation);
+        if (card == null) Log.Write("ads: a card is already up, so no logon advertisement");
+    }
+
+    /// <summary>
+    /// Makes the folder the videos go in, so that switching one of the two kinds on leaves a note of where the
+    /// videos go rather than an advertisement with nothing to play. Nothing is said when neither is on.
+    /// </summary>
+    private static void NoteFolder()
+    {
+        if (!_s.WindowAd && !_s.BootAd) return;
+        bool made = Ads.EnsureFolder();
+        Log.Write($"ads: {Ads.Folder} {(made ? "created" : "already there")}");
     }
 
     /// <summary>
@@ -225,7 +437,10 @@ internal static class Program
         MenuCloseAnim => "Window close animation",
         MenuDynCorner => "Dynamic corner radius",
         MenuReturnOrigin => "Desktop return animation",
+        MenuAdsWindow => "Ad > Window ad",
+        MenuAdsBootAd => "Ad > Logon full-screen ad",
         MenuDebugEnable => "Debug mode",
+        MenuDebugBootAd => "Debug mode > Play the logon ad",
         MenuBlacklist => "Blacklist",
         _ => $"unknown ({id})",
     };
@@ -260,6 +475,36 @@ internal static class Program
                     break;
                 }
                 _s.ReturnToOrigin = !_s.ReturnToOrigin; _s.Save(); break;
+            // Either kind switched on makes the folder the videos go in, as the note of where to put them, and
+            // only if it is not already there - a folder that exists is the one being filled. See
+            // Ads.EnsureFolder for why it is compared by name instead of asked for with Directory.Exists.
+            //
+            // Done when a kind is switched *on* rather than when the feature is first asked for, because there
+            // is no switch for the feature itself any more: the two entries are switches of their own, and the
+            // moment to make the folder is the moment one of them is switched on with nothing there to play.
+            case MenuAdsWindow:
+                _s.WindowAd = !_s.WindowAd;
+                NoteFolder();
+                _s.Save();
+                break;
+            case MenuAdsBootAd:
+                // Refused as well as frozen, and asked of the same function that drew the menu rather than of
+                // a second copy of its conditions: a menu drawn before Start with Windows was removed can
+                // still deliver this click, and a logon advertisement with no logon to run at is not one.
+                if (!Ads.Menu(Ads.Available, AutoStartOn, _s.WindowAd, _s.BootAd).BootAdUsable)
+                {
+                    Log.Write("ads: the logon-advertisement switch is frozen; refused");
+                    break;
+                }
+                _s.BootAd = !_s.BootAd;
+                NoteFolder();
+                _s.Save();
+                break;
+            case MenuDebugBootAd:
+                // The one way to run an advertisement with the switches against it, so it says so: a log that
+                // showed an advertisement nothing asked for would otherwise read as a bug.
+                PlayBootAd(forced: true);
+                break;
             case MenuDebugEnable:
             {
                 // On: the switch first, so the lines below are actually written, then the header that
@@ -327,7 +572,17 @@ internal static class Program
                 // interactive interface to show is in the text, and the second button goes to the newest
                 // release. The ini path that used to be the last line is gone - "Open config directory", a
                 // few entries up, is where that is asked for.
-                AboutDialog.Show(_host.Hwnd);
+                //
+                // True means the launch-ad code was played into the box while it was open. That is the whole
+                // way in: reveal the entry, then open the menu the code's last step asked for, so the entry
+                // that was just revealed is on screen rather than being something to go and look for.
+                if (AboutDialog.Show(_host.Hwnd))
+                {
+                    Log.Write("about: the launch-ad code was entered; revealing the menu entry");
+                    _s.AdsVisible = true;
+                    _s.Save();
+                    _host.ShowMenu();
+                }
                 break;
             case MenuBlacklist:
                 // Modal, and its own loop, so the animation keeps running behind it: the windows it is there to
@@ -590,7 +845,8 @@ internal sealed class TrayHost
         return Native.DefWindowProcW(hwnd, msg, w, l);
     }
 
-    private void ShowMenu()
+    /// <summary>Opens the tray menu. Public because the About box's launch-ad code ends by asking for it.</summary>
+    public void ShowMenu()
     {
         // Re-checked here and not only at start-up: the task can be removed by anything else on the
         // machine - Task Scheduler, another user, a cleanup tool - and a check mark that disagrees
@@ -635,6 +891,35 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING | returnGroup |
             (Program.S.ReturnToOrigin ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuReturnOrigin, Strings.T("ReturnToOrigin"));
+
+        // Hidden until it is asked for, and the only entry in this menu that is: an entertainment feature is
+        // not something to advertise in a menu. What is under it is the two kinds of advertisement, and what
+        // can be clicked is worked out in one place - Ads.Menu - rather than here.
+        //
+        // There is no entry for the feature itself. Two switches that each say what they do do not need a
+        // third saying that either of them might, and a master switch is one more thing for the ticks to
+        // disagree with.
+        //
+        // The whole submenu is frozen while Ads holds nothing to play, because nothing under it can do
+        // anything then. A frozen popup cannot be opened, which is the point: entries that could still be
+        // ticked would be promising something that cannot happen. The ticks are left as the ini has them.
+        if (Program.S.AdsVisible)
+        {
+            var ads = Ads.Menu(Ads.Available, Program.AutoStartOn, Program.S.WindowAd, Program.S.BootAd);
+            uint frozen = ads.Submenu ? 0u : Native.MF_GRAYED;
+
+            IntPtr adsMenu = Native.CreatePopupMenu();
+            Native.AppendMenuW(adsMenu, Native.MF_STRING | frozen |
+                (ads.WindowAd ? Native.MF_CHECKED : Native.MF_UNCHECKED),
+                (IntPtr)Program.MenuAdsWindow, Strings.T("AdsWindow"));
+            Native.AppendMenuW(adsMenu, Native.MF_STRING |
+                (ads.BootAdUsable ? 0u : Native.MF_GRAYED) |
+                (ads.BootAd ? Native.MF_CHECKED : Native.MF_UNCHECKED),
+                (IntPtr)Program.MenuAdsBootAd, Strings.T("AdsBootAd"));
+
+            Native.AppendMenuW(menu, Native.MF_POPUP | frozen, adsMenu, Strings.T("Ads"));
+        }
+
         Native.AppendMenuW(menu, Native.MF_SEPARATOR, IntPtr.Zero, "");
         Native.AppendMenuW(menu, Native.MF_POPUP, lang, Strings.T("Language"));
         Native.AppendMenuW(menu, Native.MF_STRING |
@@ -653,6 +938,15 @@ internal sealed class TrayHost
             (Program.S.DebugMode ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuDebugEnable, Strings.T("DebugEnable"));
         Native.AppendMenuW(debug, Native.MF_STRING, (IntPtr)Program.MenuBlacklist, Strings.T("Blacklist"));
+        // The logon advertisement on demand, so that it can be looked at without waiting for a logon and
+        // without turning the logon-ad switch on. It is here rather than in the launch-ad submenu because it
+        // is not a setting: it plays the advertisement once, now, and changes nothing.
+        //
+        // Shown only while that submenu is, which is the same switch and on purpose: this is the one entry
+        // that would otherwise tell whoever opened Debug mode that the feature exists at all.
+        if (Program.S.AdsVisible)
+            Native.AppendMenuW(debug, Native.MF_STRING | (Ads.Available ? 0u : Native.MF_GRAYED),
+                (IntPtr)Program.MenuDebugBootAd, Strings.T("DebugBootAd"));
         Native.AppendMenuW(menu, Native.MF_POPUP, debug, Strings.T("DebugMode"));
 
         Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuConfig, Strings.T("OpenConfig"));

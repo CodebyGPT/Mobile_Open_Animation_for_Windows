@@ -63,6 +63,12 @@ internal sealed class Animator
         /// <summary>Corner radius the closing card rounds out to; see OnWindowClosed.</summary>
         public int EndRadius;
 
+        /// <summary>
+        /// The advertisement's card, when one went up at the handoff. Kept so that the panel's going away can
+        /// put it back on top: see <see cref="Finish" />.
+        /// </summary>
+        public IntPtr Card;
+
         /// <summary>When the hide was last re-asserted; see the note where it is used.</summary>
         public long LastReassert;
     }
@@ -118,6 +124,46 @@ internal sealed class Animator
     /// opening animation and may therefore be allowed a closing one.
     /// </summary>
     public Action<IntPtr, uint>? OnBecameVisible;
+
+    /// <summary>
+    /// Asked when an opening animation has finished, with the window, its process, the rectangle the card ended
+    /// at, and the corner radius that card had. Returning a window means an advertisement has been put over that
+    /// window, and it is placed just under the panel so that the fade below uncovers the advertisement rather
+    /// than the desktop.
+    ///
+    /// The radius is handed over because the advertisement takes over that rectangle and has to arrive in the
+    /// same shape: a hard square appearing where a rounded card was is the one seam the fade cannot hide.
+    ///
+    /// Nothing is held back by this: the application is still revealed underneath, as it always was - unless the
+    /// callback says otherwise by setting <see cref="KeepHidden" />, which is what a window advertisement does.
+    /// </summary>
+    public Func<IntPtr, uint, RECT, int, IntPtr>? OnHandoff;
+
+    /// <summary>
+    /// Set by <see cref="OnHandoff" /> for a window the advertisement means to keep hidden while it is up, so
+    /// that the release below does not put it back on screen. Read and cleared in the handoff itself, which is
+    /// the only place it is looked at; the caller that set it releases the window when its card goes.
+    /// </summary>
+    public IntPtr KeepHidden;
+
+    /// <summary>
+    /// A window this program is keeping hidden for an advertisement that is up, set by the program when it
+    /// decides to and cleared when the card says it has gone. Watched here rather than in the advertisement
+    /// because the guard and its re-assert are this class's business, and because the tick below runs whether
+    /// or not anything is animating.
+    /// </summary>
+    public IntPtr HeldWindow;
+
+    private long _heldReassert;
+    private bool _heldLogged;
+
+    /// <summary>
+    /// How long a displayed frame is on the screen under this program, in milliseconds - the display's own
+    /// answer, measured once at start-up. Public because the advertisement's card animates its own window and
+    /// has no way to ask: a card that steps at sixteen milliseconds because that is what a timer is usually
+    /// given is a card moving at half the rate of everything else on this screen.
+    /// </summary>
+    public double FrameMs => _thread.FrameMs;
 
     /// <summary>Owns every panel window and draws the frames. See AnimationThread.cs.</summary>
     private readonly AnimationThread _thread = new();
@@ -945,12 +991,60 @@ internal sealed class Animator
     }
 
     // ------------------------------------------------------------------ per-frame tick
+    /// <summary>
+    /// Re-applies the hide of the window an advertisement is keeping hidden, at most once every fifty
+    /// milliseconds.
+    ///
+    /// This is the same job the re-assert inside the animation does, and it is a separate entry point because
+    /// an advertisement is precisely the time there is no animation: sixteen seconds in which an application
+    /// that re-enables its own window state brings its window back, and the advertisement covers nothing.
+    /// Reported as the window not having been hidden at all, which is what that looks like. Called from the
+    /// tick, which runs whether or not anything is animating, and from the advertisement's own per-frame step,
+    /// which is the tighter of the two.
+    /// </summary>
+    public void KeepHeldWindowHidden()
+    {
+        if (HeldWindow == IntPtr.Zero) { _heldLogged = false; return; }
+        long now = Compat.TickCount64;
+        if (now - _heldReassert < ReassertIntervalMs) return;
+        _heldReassert = now;
+        if (_guard.Reassert(HeldWindow) && !_heldLogged)
+        {
+            _heldLogged = true;
+            Log.Write($"hwnd={HeldWindow} the app had undone our hide while the advertisement was up;" +
+                      " re-applied");
+        }
+    }
+
+    /// <summary>
+    /// Moves the window an advertisement is standing in for, by the distance the advertisement has been dragged.
+    ///
+    /// The window is invisible at the time - alpha nought, which is what "hidden" means in this feature - so this
+    /// is a move of something nobody can see, and it is done for exactly that reason: the advertisement is meant
+    /// to be the window, and an advertisement that is dragged about while the window it replaced stays where it
+    /// was is an advertisement that gives itself away the moment it ends and the window appears somewhere the
+    /// user did not put it. Moving both keeps the two in step, and the window that comes back is where the user
+    /// left it.
+    ///
+    /// The size is left alone: a drag moves a window, it does not resize one, and asking for the rectangle it
+    /// already has is what SWP_NOSIZE is for. The Z-order is left alone for the same reason.
+    /// </summary>
+    public void MoveHeldWindow(int dx, int dy)
+    {
+        if (HeldWindow == IntPtr.Zero || (dx == 0 && dy == 0)) return;
+        if (!Native.IsWindow(HeldWindow)) return;
+        if (!Native.GetWindowRect(HeldWindow, out var r)) return;
+        Native.SetWindowPos(HeldWindow, IntPtr.Zero, r.Left + dx, r.Top + dy, 0, 0,
+                            Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+    }
+
     public void Tick()
     {
         Log.Flush();                   // buffered log lines reach the file here, never on the hot path
         _guard.ReleaseExpired();       // watchdog: nothing stays hidden past its deadline
 
         long now = Compat.TickCount64;
+        KeepHeldWindowHidden();
         for (int i = _active.Count - 1; i >= 0; i--)
         {
             var a = _active[i];
@@ -1082,7 +1176,40 @@ internal sealed class Animator
                     if ((visible && !cloaked && settled) || now > a.ReadyDeadline)
                     {
                         Log.Write($"hwnd={a.Target.Hwnd} handoff (visible={visible} cloaked={cloaked} byTimeout={now > a.ReadyDeadline})");
-                        _guard.Release(a.Target.Hwnd);   // reveal underneath the panel first
+                        // Anything the advertisement put up goes underneath the panel first, so that the fade
+                        // that follows uncovers it instead of the desktop.
+                        //
+                        // The radius goes with it, because the advertisement takes over the card's rectangle and
+                        // the corner the card ended on is the corner it has to arrive on - this is the last place
+                        // that knows what that was.
+                        IntPtr card = OnHandoff?.Invoke(a.Target.Hwnd, a.Target.Pid, TargetRect(a.Target.Hwnd),
+                                                        a.TargetRadius)
+                                      ?? IntPtr.Zero;
+                        if (card != IntPtr.Zero)
+                        {
+                            // Under the panel, so that the fade uncovers the advertisement - which only means
+                            // anything while the panel is in the topmost band, because being inserted under a
+                            // window means taking that window's place in the Z-order. Asked rather than
+                            // assumed: an advertisement that ends up in the ordinary band is an advertisement
+                            // the next window to be raised will cover, which is what was reported.
+                            int panelEx = Native.GetWindowLong(a.Panel.Hwnd, Native.GWL_EXSTYLE);
+                            bool panelTopmost = (panelEx & Native.WS_EX_TOPMOST) != 0;
+                            Native.SetWindowPos(card,
+                                                panelTopmost ? a.Panel.Hwnd : (IntPtr)(-1) /* HWND_TOPMOST */,
+                                                0, 0, 0, 0,
+                                                Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+                            a.Card = card;
+                            int cardEx = Native.GetWindowLong(card, Native.GWL_EXSTYLE);
+                            Log.Write($"hwnd={a.Target.Hwnd} advertisement card placed " +
+                                      $"{(panelTopmost ? "under the panel" : "on top, the panel not being topmost")}: " +
+                                      $"panelTopmost={panelTopmost}, cardTopmost=" +
+                                      $"{(cardEx & Native.WS_EX_TOPMOST) != 0}");
+                        }
+                        // Reveal underneath the panel first - unless the advertisement means to keep this window
+                        // hidden for as long as it is up, which a window advertisement does, and which the
+                        // callback has just said by setting KeepHidden to this window.
+                        if (KeepHidden == a.Target.Hwnd) KeepHidden = IntPtr.Zero;
+                        else _guard.Release(a.Target.Hwnd);
                         a.Phase = 2; a.PhaseStarted = now;
                     }
                     break;
@@ -1108,6 +1235,31 @@ internal sealed class Animator
         // Only asks for the panel to go: destroying a window is the job of the thread that created
         // it, so this never calls Destroy itself.
         _thread.Release(a.Panel);
+
+        // And the advertisement is put back on top of the band now that the panel has gone.
+        //
+        // It matters that this happens here rather than only at the handoff. The card was inserted *under* the
+        // panel on purpose, which is what makes the fade uncover the advertisement; a window inserted under
+        // another one takes that one's place in the Z-order, so the card's being topmost afterwards depends on
+        // the panel's having been, and an advertisement that turns up underneath the window it is covering is
+        // exactly what that looks like when it does not hold. Saying it again is one call, and the alternative
+        // is a card whose band is decided by something else's.
+        if (a.Card != IntPtr.Zero)
+        {
+            bool ok = Native.SetWindowPos(a.Card, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0,
+                                          Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+            // And the style bit as well, because the two are not the same thing to Windows: SetWindowPos is
+            // what re-stacks the window and the bit is what GetWindowLong reports, and a card that reads as
+            // not topmost after being asked to be is a card that some later window will be raised over.
+            int ex = Native.GetWindowLong(a.Card, Native.GWL_EXSTYLE);
+            if ((ex & Native.WS_EX_TOPMOST) == 0) ex = Native.SetWindowLong(a.Card, Native.GWL_EXSTYLE,
+                                                                            ex | Native.WS_EX_TOPMOST);
+            Log.Write($"hwnd={a.Target.Hwnd} advertisement put on top: setWindowPos={ok}" +
+                      $" err={Marshal.GetLastWin32Error()}, card topmost=" +
+                      $"{(Native.GetWindowLong(a.Card, Native.GWL_EXSTYLE) & Native.WS_EX_TOPMOST) != 0}," +
+                      $" visible={Native.IsWindowVisible(a.Card)}, alive={Native.IsWindow(a.Card)}");
+        }
+
         _active.RemoveAt(index);
         LogResources("after an animation");
     }
@@ -1167,8 +1319,12 @@ internal sealed class Animator
     /// This used to be a setting, with Material 2 - the Windhawk mod's cubic-bezier(0.4, 0, 0.2, 1) -
     /// as the alternative. The choice is gone: one curve is a decision rather than a preference, and the
     /// menu entry existed only to offer the other one.
+    ///
+    /// Public because the advertisement's card moves on it too: it is handed to <see cref="AdsCard.Curve" />
+    /// rather than copied, so that a card arriving and a card leaving are the same movement as the panels
+    /// around them and there is one curve in the program to keep in step.
     /// </summary>
-    private static double Ease(double t)
+    public static double Ease(double t)
     {
         if (t <= 0) return 0;
         if (t >= 1) return 1;
@@ -1204,6 +1360,9 @@ internal sealed class Panel
 
     private IntPtr _hwnd;
     private Bitmap? _iconBitmap;
+
+    /// <summary>The panel's own window, so that an advertisement can be placed just beneath it.</summary>
+    public IntPtr Hwnd => _hwnd;
 
     /// <summary>
     /// The icon pre-scaled to the size it is drawn at, once per animation.

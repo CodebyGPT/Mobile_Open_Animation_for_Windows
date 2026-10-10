@@ -16,6 +16,7 @@ Give Windows a smartphone-style opening animation.
 - **Dynamic corner radius**
 - **Material 3 emphasized curves**
 - **Follows the Windows animation setting**
+- **Launch ad and logon ad** (put your own videos in the `Ads` folder in the configuration directory)
 - **No telemetry, no network access**
 
 ### Limitations
@@ -48,6 +49,7 @@ Released under the **GNU Affero General Public License, version 3 or later** (AG
 - **支持动态圆角**
 - **采用 Material 3 Emphasized 曲线**
 - **遵循 Windows 个性化设置**
+- **支持开屏广告和开机广告**（需要自行将视频素材放入配置目录中的 Ads 文件夹）
 - **无遥测、无联网**
 
 ### 局限性

@@ -52,7 +52,6 @@ internal static class Native
     public const uint GW_OWNER = 4;
     /// <summary>The window below this one in Z-order: what shows through when this one is made
     /// transparent rather than hidden.</summary>
-    public const uint GW_HWNDNEXT = 2;
 
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
@@ -62,6 +61,16 @@ internal static class Native
     public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_CAPTION = 0x00C00000;
+
+    /// <summary>
+    /// The four frame bits that a real main window keeps even when it draws its own title bar, and
+    /// which a menu, a tooltip, a dropdown or an invisible helper window never has.
+    ///
+    /// WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX, in one name because they are
+    /// only ever asked about together: this is what tells a frameless Qt/Electron/WPF main window
+    /// apart from the helper window its process creates alongside it. See Watcher.Inspect.
+    /// </summary>
+    public const int WS_MAIN_FRAME = 0x00040000 | 0x00080000 | 0x00020000 | 0x00010000;
     public const uint DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
     public const uint WS_POPUP = 0x80000000;
@@ -117,7 +126,7 @@ internal static class Native
 
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll", SetLastError = true)] public static extern bool ShowWindow(IntPtr h, int cmd);
-    public const int SW_SHOWNOACTIVATE = 4;
+    public const int SW_SHOWNOACTIVATE = 4, SW_HIDE = 0;
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 
     public const int SW_SHOWMINIMIZED = 2;
@@ -160,6 +169,8 @@ internal static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+    /// <summary>GW_HWNDNEXT is 2; Animator walks the Z-order with it.</summary>
+    public const uint GW_HWNDNEXT = 2;
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern ushort RegisterClassExW(ref WNDCLASSEXW wc);
@@ -194,6 +205,15 @@ internal static class Native
     [DllImport("user32.dll")] public static extern IntPtr DispatchMessageW(ref MSG m);
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern IntPtr SetTimer(IntPtr h, IntPtr id, uint ms, IntPtr cb);
+    [DllImport("user32.dll")] public static extern bool KillTimer(IntPtr h, IntPtr id);
+
+    /// <summary>
+    /// A timer's callback. With no window and an id of its own - SetTimer(NULL, ...) - it is called by
+    /// whoever pumps this thread's queue, and never through DispatchMessage, which is what makes it the way
+    /// back onto the message loop from somewhere that must not do the work itself. See AboutDialog.
+    /// </summary>
+    public delegate void TimerProc(IntPtr hwnd, uint msg, IntPtr id, uint time);
+    [DllImport("user32.dll")] public static extern IntPtr SetTimer(IntPtr h, IntPtr id, uint ms, TimerProc cb);
 
     [DllImport("user32.dll")] public static extern IntPtr CreatePopupMenu();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool AppendMenuW(IntPtr menu, uint flags, IntPtr id, string text);
@@ -215,6 +235,13 @@ internal static class Native
     /// </summary>
     public const int SM_CMONITORS = 80, SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77,
                      SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
+
+    /// <summary>
+    /// How far the mouse may move while a button is held and still be a click rather than a drag. The system's
+    /// own answer, which is also what it uses for the same question about its own windows - a drag that starts
+    /// on a hand's tremor is a drag nobody asked for.
+    /// </summary>
+    public const int SM_CXDRAG = 68, SM_CYDRAG = 69;
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, uint attr, out RECT value, int size);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr LoadIconW(IntPtr inst, IntPtr name);
@@ -274,6 +301,11 @@ internal static class Native
     [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
+    /// <summary>Rounds a window off, which is how a card is made to end as a disc. The region is the
+    /// system's once it is set, so it is not deleted here. See <see cref="AdsCard" />.</summary>
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b,
+        int ellipseW, int ellipseH);
+    [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, bool redraw);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFO bmi,
         uint usage, out IntPtr bits, IntPtr section, uint offset);
 
@@ -340,6 +372,9 @@ internal static class Native
     /// extended flag set, so the one value is enough. See KeyTracker.Callback.
     /// </summary>
     public const uint VK_RETURN = 0x0D;
+
+    /// <summary>The four arrows of the launch-ad code; see Konami.</summary>
+    public const uint VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
@@ -419,12 +454,18 @@ internal static class Native
     }
 
     public const uint MONITOR_DEFAULTTONEAREST = 2;
-    public const uint SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_NOMOVE = 0x0002,
+                      SWP_SHOWWINDOW = 0x0040;
+
+    /// <summary>Where SetWindowPos puts a window; -1 is "above everything", which an advertisement card is.</summary>
+    public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1), HWND_TOP = IntPtr.Zero;
 
     /// <summary>Sent when the window moves to a monitor with a different scale; the suggested rect is in lParam.</summary>
     public const uint WM_DPICHANGED = 0x02E0;
 
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT p, uint flags);
+    /// <summary>The display a window is on, for the About box's launch-ad code, which steps around it.</summary>
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFO info);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
@@ -440,10 +481,31 @@ internal static class Native
         uint clipPrecision, uint quality, uint pitchAndFamily, string face);
 
     public const int COLOR_WINDOW = 5;
+
+    // ---- the advertisement card's own controls, all of them stock ------------------------------------------
+    public const uint WS_CLIPCHILDREN = 0x02000000, BS_PUSHBUTTON = 0x00000000, SS_CENTER = 0x00000001;
+    public const int WS_EX_TOPMOST = 0x00000008;
+    public const int SM_CXSCREEN = 0, SM_CYSCREEN = 1, BLACK_BRUSH = 4, DEFAULT_GUI_FONT = 17;
+    [DllImport("gdi32.dll")] public static extern IntPtr GetStockObject(int index);
+
+    /// <summary>How the card hears a click on the video it is showing: the video is a child of its own.</summary>
+    /// <summary>Walking the children of a window, which is the only way to see what a player put there.</summary>
+    public const uint WM_PARENTNOTIFY = 0x0210, WM_CTLCOLORBTN = 0x0135;
+    [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
+    [DllImport("gdi32.dll")] public static extern uint SetBkColor(IntPtr dc, uint color);
     public static readonly IntPtr IDC_ARROW = (IntPtr)32512;
 
     /// <summary>A static asks its parent for the colours it should paint its text and background in.</summary>
     public const uint WM_CTLCOLORSTATIC = 0x0138;
+
+    /// <summary>
+    /// The mouse while a button is held. A click on the video is a click on a child window, and a child sends
+    /// its parent a note about the button going DOWN and nothing about it coming up - so the up, the move and
+    /// the release are only ever seen by whoever holds the capture. See AdsCard.Released.
+    /// </summary>
+    public const uint WM_MOUSEMOVE = 0x0200, WM_CAPTURECHANGED = 0x0215;
+    [DllImport("user32.dll")] public static extern IntPtr SetCapture(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool ReleaseCapture();
 
     // ---- what the standard controls need from us: nothing of theirs is drawn here ----------------------
     [DllImport("user32.dll")] public static extern bool EnableWindow(IntPtr h, bool enable);
@@ -505,7 +567,17 @@ internal static class Native
     /// </summary>
     public const uint TDF_ENABLE_HYPERLINKS = 0x0001, TDF_ALLOW_DIALOG_CANCELLATION = 0x0008;
 
-    public const uint TDN_HYPERLINK_CLICKED = 3;
+    public const uint TDN_HYPERLINK_CLICKED = 3, TDN_DIALOG_CONSTRUCTED = 7;
+
+    /// <summary>
+    /// Rewrites one of the dialog's own elements while it is up, which is the only way its text can be changed:
+    /// the content is a SysLink inside a DirectUIHWND and the main instruction is not a control at all, so
+    /// there is no window whose text could be overwritten instead. WM_USER + 108 - and the six below it is
+    /// TDM_CLICK_BUTTON, which closes the dialog rather than changing anything. probe/aboutdialog measures it.
+    /// </summary>
+    public const uint TDM_SET_ELEMENT_TEXT = 0x0400 + 108;
+    /// <summary>TASKDIALOG_ELEMENTS, in commctrl.h's order.</summary>
+    public const int TDE_CONTENT = 0, TDE_MAIN_INSTRUCTION = 3;
 
     /// <summary>
     /// TD_INFORMATION_ICON, and it is 0xFFFD rather than -3 on purpose: MAKEINTRESOURCEW truncates to a WORD

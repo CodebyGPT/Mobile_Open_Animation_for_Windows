@@ -267,13 +267,25 @@ internal sealed class Watcher : IDisposable
         int ex = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
         if ((ex & Native.WS_EX_TOOLWINDOW) != 0) return null;   // tray flyouts, tooltips, OSD
 
-        // The mod's rule (mobile-open-animation.wh.cpp:977) and the reason a program like the
-        // NVIDIA control panel used to get two panels: without WS_CAPTION we accept the
-        // invisible helper window it creates alongside its real one, and animate empty space.
-        // Fullscreen windows legitimately have no caption, so they are exempt.
+        // The mod's rule, and the reason a program like the NVIDIA control panel used to get two
+        // panels: without WS_CAPTION we accept the invisible helper window it creates alongside its
+        // real one, and animate empty space. Fullscreen windows legitimately have no caption, so
+        // they are exempt.
+        //
+        // A frameless main window is not a helper window, though. Qt, Electron and WPF apps draw
+        // their own title bar, so their main window carries no WS_CAPTION and is created as
+        // WS_POPUP - DingTalk's Qt51511QWindowIcon is exactly that - but it keeps the frame bits a
+        // menu, tooltip or dropdown never has. The mod's 1.1.0_Pre2 admits those bits (ShouldAnimate;
+        // upstream commit b217fa2, which is not in this repository - the tracked copy of the mod is
+        // 1.0.0) and measured the cost at 3 more windows out of 282, all of them real application
+        // windows. Measured here as well: 3 more out of 297, and all three are turned down anyway by
+        // the owner, size and WS_EX_TOOLWINDOW gates above, so none of them reaches an animation.
         int style = Native.GetWindowLong(hwnd, Native.GWL_STYLE);
         bool fullscreen = w >= Native.GetSystemMetrics(0) && h >= Native.GetSystemMetrics(1);
-        if ((style & Native.WS_CAPTION) == 0 && !fullscreen) return null;
+        if ((style & Native.WS_CAPTION) == 0 && !fullscreen)
+        {
+            if ((style & Native.WS_MAIN_FRAME) == 0) return null;
+        }
 
         // Standard dialogs ("How do you want to open this file?", Open, Save As, Run, and
         // every other #32770) are not the app opening: the mod skips them by default

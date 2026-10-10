@@ -102,6 +102,25 @@ internal sealed class HideGuard
     }
 
     /// <summary>
+    /// Keeps one window hidden for longer than the watchdog would.
+    ///
+    /// The watchdog exists so that nothing can stay invisible for good, and its deadline is the same for every
+    /// window because it is there to cover a hide that something forgot. This is the opposite case: a caller
+    /// that knows exactly how long it means to keep the window - an advertisement that covers it, and the cap
+    /// on that advertisement - and says so. The deadline is moved out rather than removed, so a caller that
+    /// dies without saying anything still cannot leave a window invisible for ever: the watchdog puts it back
+    /// at the moment the advertisement could no longer have been up anyway.
+    /// </summary>
+    public void Hold(IntPtr hwnd, int ms)
+    {
+        lock (_lock)
+        {
+            if (!_hidden.TryGetValue(hwnd, out var e)) return;
+            e.Deadline = Compat.TickCount64 + Compat.Clamp(ms, 500, 600000);
+        }
+    }
+
+    /// <summary>
     /// Re-applies the hide if the application has undone it.
     ///
     /// The hide is applied at window creation, but a launching app carries on setting its own
