@@ -147,18 +147,47 @@ internal sealed class Settings
         Path.Combine(AppContext.BaseDirectory, "MobileOpenAnimation.ini");
 
     /// <summary>
+    /// Whether the user's Windows is in Chinese, which is the one language this program picks for a user rather
+    /// than asking them: the interface is translated into English and Chinese and into nothing else, and a
+    /// Chinese system left in English reads as a program that did not notice.
+    ///
+    /// Simplified and Traditional alike, which is one answer here and not two: the program has one Chinese, and
+    /// Taiwan, Hong Kong, Macau and Singapore are all Chinese systems. See ChineseLangId for the ids.
+    ///
+    /// Read from Windows and never from the ini, because of where it is asked: both callers are deciding the
+    /// language of a run that has no ini yet - the first start, and the question asked before the settings are
+    /// opened at all - so the ini is not merely the wrong source, it is not a source.
+    /// </summary>
+    public static bool WindowsIsChinese() => ChineseLangId(Native.GetUserDefaultUILanguage());
+
+    /// <summary>
+    /// Whether a LANGID is Chinese, in either script.
+    ///
+    /// The primary language is the low ten bits of the id and LANG_CHINESE is 4; everything above it is the
+    /// sublanguage, which is what separates zh-CN from zh-TW and what this deliberately does not look at. Their
+    /// values, for the record, because "is Traditional covered" is the kind of question that outlives a comment:
+    /// zh-CN 0x0804, zh-SG 0x1004, zh-TW 0x0404, zh-HK 0x0C04, zh-MO 0x1404 - the four scripts-and-regions that
+    /// are not the mainland are 0x0404, 0x0C04, 0x1404 and 0x1004, and all six share the low ten bits.
+    /// </summary>
+    public static bool ChineseLangId(int id) => (id & 0x03FF) == 0x0004;
+
+    /// <summary>
     /// Bumped whenever a default changes. An existing .ini overrides the defaults, so
     /// without this a changed default silently has no effect on anyone who has already run
     /// the program once - which is exactly how "the timeout is still 8 seconds" happened.
     /// </summary>
     public const int CurrentConfigVersion = 2;
 
-    public static Settings Load()
+    public static Settings Load(Lang? firstRunLanguage = null)
     {
         var s = new Settings();
         s.ExcludedClasses.AddRange(DefaultExcludedClasses);
         s.ExcludedProcesses.AddRange(DefaultExcludedProcesses);
-        if (!File.Exists(IniPath)) { s.Save(); return s; }
+        // The language of a run that has no ini yet is decided here rather than by the caller afterwards, and
+        // that is not tidiness: this is the one place that knows the file was not there, and a second look for it
+        // from outside would have to ask the question the file system has already answered - as well as writing
+        // the ini twice, once in English and then again in the language the first write should have used.
+        if (!File.Exists(IniPath)) { s.Language = firstRunLanguage ?? s.Language; s.Save(); return s; }
 
         var lines = File.ReadAllLines(IniPath);
 
@@ -422,6 +451,22 @@ internal static class Strings
              "Mobile Open Animation for Windows 必须以管理员身份运行。\n\n" +
              "否则 Windows 的用户界面特权隔离(UIPI)会阻止它隐藏大多数程序的窗口，\n" +
              "动画将完全不会生效。"),
+        // The question asked at the first start in a folder that already has things in it, the title it is asked
+        // under, and the two answers to it. The title names the situation rather than the program: the question is
+        // about the folder, and "Mobile Open Animation for Windows" over it would be the tray tooltip, not a
+        // heading. Asked rather than announced because the answer decides whether anything is written at all: the
+        // caller has to be able to leave without the program having made a file in the folder the user is about
+        // to move it out of. Deliberately says nothing about what the program keeps beside itself - which is the
+        // whole reason the folder matters, and is also a feature nobody has been told about yet.
+        ["CrowdedTitle"] =
+            ("Starting from a folder that already has other files in it", "脏目录启动时提醒"),
+        ["CrowdedAsk"] =
+            ("This folder already has other files in it. Continue starting the program from this folder?",
+             "当前目录已存在其他的文件，确定让程序继续从该目录启动吗？"),
+        ["CrowdedAdvice"] =
+            ("You can also cancel this run, move the program to a clean folder, and start it there instead.",
+             "您也可以取消本次启动，将本程序移动到一个干净的目录后再继续启动。"),
+        ["ContinueAnyway"] = ("Continue", "继续"),
         ["About"]        = ("About", "关于"),
         ["Version"]      = ("Version", "版本"),
         ["Blacklist"]    = ("Blacklist", "黑名单管理"),

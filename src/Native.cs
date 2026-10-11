@@ -597,6 +597,184 @@ internal static class Native
     public static extern int TaskDialogIndirect(ref TASKDIALOGCONFIG config, out int button,
                                                 IntPtr radioButton, IntPtr verification);
 
+    // ---- the one dialog with two answers of our own naming -------------------------------------------------
+
+    /// <summary>IDCANCEL, which is also what a task dialog returns when it is dismissed instead of answered.</summary>
+    public const int IDCANCEL = 2;
+
+    /// <summary>IDOK: what the message-box fallback's first button answers with.</summary>
+    public const int IDOK = 1;
+
+    /// <summary>
+
+    /// <summary>
+    /// One of the dialog's own buttons, in commctrl.h's packing.
+    ///
+    /// Pack = 1 is measured rather than guessed, and it took fetching the header to settle: the Windows headers
+    /// are not installed on the machine this was written on, and the structure is declared inside commctrl.h's
+    /// pshpack1 block, together with the configuration that holds it. Getting it wrong is not a compile error and
+    /// not a failed call - the dialog would read the text pointer four bytes further along than it was written,
+    /// and the buttons would come out with whatever was there.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+    public struct TASKDIALOG_BUTTON
+    {
+        public int NButtonID;
+        public string PszButtonText;
+    }
+
+    [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd, int id);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int count);
+
+    /// <summary>
+    /// The language the user's own Windows is in, as a LANGID: the primary language in the low ten bits and the
+    /// sublanguage above it. It is the user's rather than the system's because this is a per-session tray program
+    /// and the question it answers is what language to write to the person sitting at it.
+    /// </summary>
+    [DllImport("kernel32.dll")] public static extern ushort GetUserDefaultUILanguage();
+
+    /// <summary>
+    /// Asks a question whose two answers are named by the caller, and returns whether the first one was chosen.
+    ///
+    /// A task dialog rather than a message box because a message box's two buttons say OK and Cancel and cannot
+    /// be made to say anything else - and the two answers here are not yes and no, they are "carry on from this
+    /// folder" and "not this time", which are worth saying in words.
+    ///
+    /// The buttons are declared in the configuration, which is the documented way and the one with nothing to
+    /// guess about. Adding the dialog's own OK and Cancel and rewriting their window text was tried first, and
+    /// measured to be wrong: the text went in and the buttons read back empty, because the DirectUI host takes it
+    /// back the moment it is set. See TASKDIALOG_BUTTON for the one thing here that had to be checked rather than
+    /// known.
+    ///
+    /// Anything that is not the first button - the dialog dismissed with Esc or its X, or a dialog that could not
+    /// be shown at all - is the second answer. The one caller is a program about to write a file into the folder
+    /// it was started from, so the answer that has to be guessed at is the one that writes nothing.
+    /// </summary>
+    public static bool Ask(string caption, string question, string advice, string yes, string no)
+    {
+        AskNote = null;
+        const int Yes = 100, No = 101;
+        var buttons = new[]
+        {
+            new TASKDIALOG_BUTTON { NButtonID = Yes, PszButtonText = yes },
+            new TASKDIALOG_BUTTON { NButtonID = No, PszButtonText = no },
+        };
+        // Held for the length of the call and handed to the callback, which reads the names back off it so that
+        // the log can say whether the dialog took them - see Asked.
+        var handle = GCHandle.Alloc(buttons);
+        // And the same buttons in unmanaged memory, which is what the dialog is really handed. An array *field*
+        // in the configuration was the first thing tried and it does not marshal at all: the call comes back as
+        // E_INVALIDARG and the question falls through to the message box, which is a fallback that hides the
+        // reason it was needed. So the array is laid out by hand, one structure at a time, with the strings
+        // allocated by the marshaller and freed by it again in the finally below.
+        int stride = Marshal.SizeOf<TASKDIALOG_BUTTON>();
+        IntPtr block = Marshal.AllocHGlobal(stride * buttons.Length);
+        try
+        {
+            for (int i = 0; i < buttons.Length; i++)
+                Marshal.StructureToPtr(buttons[i], block + i * stride, false);
+
+            var config = new TASKDIALOGCONFIG
+            {
+                CbSize = (uint)Marshal.SizeOf<TASKDIALOGCONFIG>(),
+                HwndParent = IntPtr.Zero,
+                DwFlags = TDF_ALLOW_DIALOG_CANCELLATION,
+                DwCommonButtons = 0,                 // the two below are the whole of what it offers
+                PszWindowTitle = caption,
+                // The blue i, which is what this dialog is: a question about the folder, not a fault. Same
+                // MAKEINTRESOURCE value as the About box's, and no TDF_USE_HICON_MAIN - see TD_INFORMATION_ICON.
+                MainIcon = TD_INFORMATION_ICON,
+                PszMainInstruction = question,
+                PszContent = advice,
+                CButtons = (uint)buttons.Length,
+                PButtons = block,
+                NDefaultButton = Yes,
+                PfCallback = Asked,
+                LpCallbackData = GCHandle.ToIntPtr(handle),
+            };
+            int hr = TaskDialogIndirect(ref config, out int button, IntPtr.Zero, IntPtr.Zero);
+            if (hr >= 0) return button == Yes;
+            AskNote = $"TaskDialogIndirect returned 0x{hr:X8}";
+        }
+        catch (Exception ex)
+        {
+            AskNote = $"{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            for (int i = 0; i < buttons.Length; i++)
+                Marshal.DestroyStructure<TASKDIALOG_BUTTON>(block + i * stride);
+            Marshal.FreeHGlobal(block);
+            handle.Free();
+        }
+
+        // And the question is still asked, with a message box. TaskDialogIndirect is comctl32 6's, and a process
+        // that never asked for that version has no such entry point at all - which is what happened to the first
+        // version of this, and what the probe could not see until it was given the manifest the program carries.
+        // The two buttons then say OK and Cancel, the system's own names for the same two answers: the fallback is
+        // not a lesser question, it is the same one in older clothes, and it is still asked rather than skipped.
+        AskNote ??= "the task dialog was not available";
+        return MessageBoxW(IntPtr.Zero, $"{question}{Environment.NewLine}{Environment.NewLine}{advice}",
+                           caption, MB_OKCANCEL) == IDOK;
+    }
+
+    /// <summary>
+    /// Whatever is worth writing down about the last <see cref="Ask" />, or null when it went as intended. Not an
+    /// error either way - the question was asked and answered. It is here because both ways it can go wrong are
+    /// invisible from the outside: a fallback to the message box, whose buttons are the system's, and a dialog
+    /// whose buttons did not come out with the names they were given. The caller logs it while debug mode is on.
+    /// </summary>
+    public static string? AskNote;
+
+    /// <summary>MB_OKCANCEL: the fallback's two buttons, which answer IDOK and IDCANCEL.</summary>
+    public const uint MB_OKCANCEL = 0x00000001;
+
+    /// <summary>
+    /// Reads the dialog's own buttons back once they exist, and writes down any that did not come out as they
+    /// were asked for.
+    ///
+    /// This is the check that the structure the names were declared in is the one the dialog read: a wrong
+    /// packing would leave the buttons saying something nobody asked for, and nothing else in the program could
+    /// notice. It reads rather than writes, which is the route that was tried first and measured to end with
+    /// empty buttons. Whatever it finds reaches the log through AskNote, and nothing here changes what the dialog
+    /// does.
+    ///
+    /// Returns S_OK for every notification, including the ones it does not care about: a dialog told anything
+    /// else takes it as a refusal and closes.
+    /// </summary>
+    private static int Asked(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, IntPtr refData)
+    {
+        if (msg == TDN_DIALOG_CONSTRUCTED && refData != IntPtr.Zero)
+        {
+            try
+            {
+                var wanted = (TASKDIALOG_BUTTON[])GCHandle.FromIntPtr(refData).Target!;
+                foreach (var button in wanted)
+                {
+                    // Nothing to read when the button is not a window of its own - a task dialog is free to keep
+                    // its buttons inside its DirectUI host - and nothing to say about it either way.
+                    IntPtr found = GetDlgItem(hwnd, button.NButtonID);
+                    if (found == IntPtr.Zero) continue;
+                    string got = TextOf(found);
+                    if (got != button.PszButtonText)
+                        AskNote = $"the button {button.NButtonID} says \"{got}\" and not \"{button.PszButtonText}\"";
+                }
+            }
+            catch { }
+        }
+        return 0;
+    }
+
+    /// <summary>A window's text, or an empty string when there is no such window.</summary>
+    private static string TextOf(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return "";
+        var text = new StringBuilder(256);
+        int n = GetWindowTextW(hwnd, text, text.Capacity);
+        return n > 0 ? text.ToString(0, n) : "";
+    }
+
     /// <summary>The program's one way out to the browser, used by the About box's link.</summary>
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr ShellExecuteW(IntPtr hwnd, string operation, string file,

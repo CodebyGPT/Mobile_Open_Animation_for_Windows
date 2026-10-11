@@ -117,11 +117,46 @@ internal static class Program
 
     private static int Run()
     {
+        // Whether the program was put in a folder with other things in it, asked *before* anything at all is
+        // read or written and answered as a dialog much later - the order of the two is the whole of why it is
+        // here. Reading the settings is what writes the ini when there is not one, and this question exists so
+        // that a user who does not want the program in that folder can leave without it having made a file
+        // there: asked after the settings, the question would arrive with the answer already written down and
+        // nothing left to refuse. See FolderCheck.
+        string? crowded = FolderCheck.Why(AppContext.BaseDirectory, FolderCheck.Self());
+
+        // The theme before the question below, so that the question comes up in it rather than always in the
+        // light one. It reads the registry itself and needs nothing from the settings, which is why it can be
+        // this early.
+        Native.DarkMode.Apply();
+
+        if (crowded is string why)
+        {
+            // In the language the user's Windows is in, which is the only source there is here: the ini does not
+            // exist - that is the first thing this question is about - so there is no setting to read, and the
+            // answer is the same one the first run below is about to choose anyway.
+            Strings.Use(Settings.WindowsIsChinese() ? Lang.ChineseSimplified : Lang.English);
+            bool start = Native.Ask(Strings.T("CrowdedTitle"),
+                                    Strings.T("CrowdedAsk"), Strings.T("CrowdedAdvice"),
+                                    Strings.T("ContinueAnyway"), Strings.T("Exit"));
+            if (!start)
+            {
+                // Nothing is written on the way out, not even a log: a log file in the folder the user has just
+                // said the program should not be in would be the same mess this question is about.
+                return 1;
+            }
+        }
+
         // Settings first, because debug mode is one of them and it decides whether the log is written at
         // all: with it off there is no file to write a first line into, and everything below this is silent
         // by design rather than by accident. Log.Start is what opens the run in the log, so it comes after
         // the switch is known, not before.
-        _s = Settings.Load();
+        //
+        // The language is handed over as the first run's, which means "use this one if there is no ini" - the
+        // one language this program picks for a user rather than asking them, and only for a user whose Windows
+        // is in Chinese. Everyone else keeps the English default, which is what an ini that does not exist says
+        // anyway. See WindowsIsChinese, and Lang, which has two languages and no third.
+        _s = Settings.Load(Settings.WindowsIsChinese() ? Lang.ChineseSimplified : null);
         Log.On = _s.DebugMode;
         Log.Start("startup");
         Log.Write($"pid={Native.GetCurrentProcessId()} lang={_s.Language} ini={Settings.IniPath}");
@@ -135,12 +170,6 @@ internal static class Program
         // when elevated, that is the whole explanation for both symptoms.
         Log.Write($"elevated={IsElevated()}");
         Strings.Use(_s.Language);
-
-        // Before the first window is made. uxtheme takes the preference only while nothing has been created
-        // with the old one, so a tray icon or a menu built before this would keep the theme it was built
-        // with. It is also what makes the two boxes below - the already-running note is silent, the elevation
-        // one is not - come up in the user's theme rather than always in the light one.
-        Native.DarkMode.Apply();
 
         // Silent on purpose. A tray program that is already running needs no dialog to say so: the tray
         // icon is next to the clock, and being told "already running" by a second copy of something you
@@ -165,6 +194,16 @@ internal static class Program
                                "Mobile Open Animation for Windows", 0x00000030 /* MB_ICONWARNING */);
             return 1;
         }
+
+        // What the answer was, written down where it can be read afterwards: the question itself is asked once
+        // per folder and is answered by somebody who is not going to remember which folder it was about. It goes
+        // here rather than beside the question because there is no log to write to until the settings above have
+        // been read, and the run that was refused writes nothing at all.
+        Log.Write(crowded is string said
+            ? $"folder: {AppContext.BaseDirectory} is not a folder of its own - {said}; the user chose to carry on"
+            : $"folder: {AppContext.BaseDirectory} is a folder of its own");
+        if (Native.AskNote is string whyNot)
+            Log.Write($"folder: the question was not asked the way it should have been ({whyNot})");
 
         _host = new TrayHost();
         _host.Create();
