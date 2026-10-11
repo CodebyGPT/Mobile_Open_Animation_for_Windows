@@ -1,14 +1,14 @@
-[English](#english) | [中文](#中文)
+<p align="center">
+  <img src="icon.png" alt="The program's icon: a square with a curve across it" width="160">
+</p>
 
-# Mobile Open Animation for Windows
+<h1 align="center">Mobile Open Animation for Windows</h1>
 
-<img src="icon.png" alt="The program's icon: a square with a curve across it" width="96" align="right">
+<p align="center"><a href="#english">English</a> | <a href="#中文">中文</a></p>
 
 ---
 
-## English
-
-Give Windows a smartphone-style opening animation.
+<h3 id="english">Give Windows a smartphone-style opening animation.</h3>
 
 ### Features
 
@@ -37,20 +37,14 @@ Released under the **GNU Affero General Public License, version 3 or later** (AG
 - There is **no warranty**; you may convey it under the terms of the licence. The full licence text is in [`LICENSE`](LICENSE).
 - Source: <https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows>
 
-### Icon
+### Icon source
 
 The icon is from ByteDance's official icon library, [ByteDance IconPark](https://github.com/bytedance/IconPark)
-(the "curve adjustment" icon), used under the permissive **Apache License**. The program draws it at run time
-rather than shipping it as a picture: the outline is the accent colour Windows is using and the fill is white on
-a light system and black on a dark one, so it is drawn again when either changes. The icon the program's own file
-and its About box carry is the same artwork left in its own colours, and the SVG both are drawn from is
-[`icon/曲线调整_curve-adjustment.svg`](icon/曲线调整_curve-adjustment.svg).
+(the "curve adjustment" icon), used under the permissive **Apache License**.
 
 ---
 
-## 中文
-
-让 Windows 拥有类似智能手机的开屏动画。
+<h3 id="中文">让 Windows 拥有类似智能手机的开屏动画。</h3>
 
 ### 特性
 
@@ -79,10 +73,7 @@ and its About box carry is the same artwork left in its own colours, and the SVG
 - 本程序**不提供任何担保**；你可以依据许可证条款传播它。许可证全文见根目录的 [`LICENSE`](LICENSE)。
 - 源代码：<https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows>
 
-### 图标
+### 图标来源
 
 本程序图标来自字节跳动官方图标库 [ByteDance IconPark](https://github.com/bytedance/IconPark)（"曲线调整"图标），
-使用宽松的 **Apache License** 许可。程序在运行时绘制该图标而不是附带一张图片：描边为系统当前的主题色，
-填充在浅色模式下为白色、深色模式下为黑色，因此两者任一改变时图标会重新绘制。程序自身文件与"关于"窗口中
-使用的则是同一套图形保留原有配色的版本，两者都由
-[`icon/曲线调整_curve-adjustment.svg`](icon/曲线调整_curve-adjustment.svg) 绘制而来。
+使用宽松的 **Apache License** 许可。
