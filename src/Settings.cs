@@ -486,7 +486,7 @@ internal static class Strings
         // to move it out of. Deliberately says nothing about what the program keeps beside itself - which is the
         // whole reason the folder matters, and is also a feature nobody has been told about yet.
         ["CrowdedTitle"] =
-            ("Starting from a folder that already has other files in it", "脏目录启动时提醒"),
+            ("Starting from a folder that already has other files in it", "启动时脏目录提醒"),
         ["CrowdedAsk"] =
             ("This folder already has other files in it. Continue starting the program from this folder?",
              "当前目录已存在其他的文件，确定让程序继续从该目录启动吗？"),
