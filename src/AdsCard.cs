@@ -66,6 +66,24 @@ internal sealed class AdsCard
     public static Action<bool>? MuteRemembered;
 
     /// <summary>
+    /// Where a search asked for by a click on the advertisement's own name is handed over. The program points
+    /// this at the shell - see Strings.SearchUrl and AdsCard.SearchUrlFor, which are the two halves of what is
+    /// allowed to be handed over - and a probe points it at a recorder so that no browser opens from a test.
+    ///
+    /// The card itself does not launch anything, and that is on purpose: everything this file can produce is the
+    /// URL that <see cref="SearchUrlFor" /> returns, and the one caller of the callback is what does the
+    /// launching. Nothing here can be talked into handing the shell a file name or a path.
+    /// </summary>
+    public static Action<string>? Searched;
+
+    /// <summary>
+    /// The engine a click on the advertisement's name searches in: an https URL ending in its own query key, so
+    /// that everything after it can only ever be a search term. Set from Strings by the program, which is where
+    /// the per-language choice is; the default here is the English one, which is the program's default language.
+    /// </summary>
+    public static string SearchUrl = "https://www.google.com/search?q=";
+
+    /// <summary>
     /// How the card goes away, how long it takes, and the shape it wears while it is up.
     ///
     /// All of them come from the program, because all of them are decisions it has already made about its own
@@ -132,12 +150,20 @@ internal sealed class AdsCard
     private static AdsCard? _open;
 
     private IntPtr _hwnd, _videoHost;
-    private Capsule.Style? _style;
-    private Capsule? _mute, _countdown;
+    private Capsule.Style? _style, _nameStyle;
+    private Capsule? _mute, _countdown, _name;
     private MediaPlayer? _player;
     private string[] _candidates = Array.Empty<string>();
     private int _next;
 
+    /// <summary>The file that is playing, without its extension: what the name capsule says.</summary>
+    private string _file = "";
+
+    /// <summary>That name as it will be shown, shortened once per file rather than once per step.</summary>
+    private string _label = "";
+
+    /// <summary>How wide the name capsule may be, in pixels, or 0 before the style is known.</summary>
+    private int _labelCeiling;
     private RECT _full, _small;
     private int _startedAt, _capSeconds, _collapseAt, _alpha = 255, _corner, _frames, _moved, _frame = 16;
 
@@ -151,6 +177,9 @@ internal sealed class AdsCard
     private long _deadline;              // when the countdown reaches zero, 0 until the player has said how long
     private int _shownSeconds = -1;
     private bool _muted, _closeAnimation, _shrinking, _done, _controls, _grow, _grown, _fitSaid;
+
+    /// <summary>What the handover to the last frame took, and whether that has been written down yet.</summary>
+    private bool _heldFrame, _heldSaid;
 
     /// <summary>
     /// The control the mouse went down on, or nothing when it is not held. Kept because the click is decided
@@ -177,6 +206,12 @@ internal sealed class AdsCard
     /// </summary>
     public Action<int, int>? Moved;
 
+    /// <summary>
+    /// The player, for a caller that wants to drive or look at the file itself - which is what probe/media does
+    /// with its frame checks. Nothing in the program reads it.
+    /// </summary>
+    internal MediaPlayer? Player => _player;
+
     /// <summary>Where the card is, and where it would collapse back to, for a caller that moves it.</summary>
     internal RECT Place => _full;
     internal RECT CollapsesInto => _small;
@@ -191,6 +226,12 @@ internal sealed class AdsCard
     /// </summary>
     public IntPtr MuteControl => _mute?.Hwnd ?? IntPtr.Zero;
     public IntPtr CountdownControl => _countdown?.Hwnd ?? IntPtr.Zero;
+
+    /// <summary>The capsule that names the advertisement, for a caller that wants to look at it.</summary>
+    public IntPtr NameControl => _name?.Hwnd ?? IntPtr.Zero;
+
+    /// <summary>What that capsule is saying, shortened as far as the card needed it to be.</summary>
+    internal string LabelText => _label;
 
     /// <summary>True while a card is on screen, so that a caller does not put up a second one.</summary>
     public static bool Showing => _open != null;
@@ -353,6 +394,8 @@ internal sealed class AdsCard
             }
             _player?.Dispose();
             _player = player;
+            _file = System.IO.Path.GetFileNameWithoutExtension(file);
+            SetName();
             Say($"ads: playing {System.IO.Path.GetFileName(file)}");
             return;
         }
@@ -387,6 +430,17 @@ internal sealed class AdsCard
         {
             // The first frame is given a moment to actually be drawn before anything moves: see Close.
             if (Now < _collapseAt) return;
+            // And what the handover to the last frame did is said here rather than where the seek was asked for.
+            // mfplay's SetPosition is asynchronous, so a position read in the same breath is the position
+            // playback was at and not the one it was sent to: measured, a card whose countdown cut a file short
+            // logged a landing of 1726 ms where it had asked for 14978, and the whole point of the line is that
+            // it can be believed. By this step the seek has had the sixty milliseconds Close gave it.
+            if (!_heldSaid)
+            {
+                _heldSaid = true;
+                Say($"ads: the last frame is up: {_heldFrame}, landed at {_player?.PositionMs ?? -1} ms of " +
+                    $"{_player?.DurationMs ?? -1}");
+            }
             if (!Animate(_full, _small, _collapseAt, CollapseMs)) return;
             ReportFrames("collapse", _collapseAt);
             _done = true;
@@ -413,6 +467,13 @@ internal sealed class AdsCard
         // to be sent WM_MOUSEMOVE would never change; the card is already stepping sixteen times a second for
         // the countdown, which is finer than anyone can move a mouse off a button and notice.
         if (_pressOn == IntPtr.Zero) Look();
+
+        // The name capsule's search glyph, swinging on the card's own clock and on the card's own steps: a timer
+        // of its own would be a second thing timing the same advertisement, and the card is stepping sixty times
+        // a second while it is up anyway. What is being told is only the angle - what the capsule says is set
+        // when the file changes, not here. See Capsule.Swing for the four numbers and the shape of the movement,
+        // and SetSpin, which does nothing at all on the steps where the angle has not moved.
+        _name?.SetSpin(Capsule.Swing(now));
         WatchPlayer();
 
         if (_deadline == 0) return;
@@ -634,24 +695,38 @@ internal sealed class AdsCard
     /// why a control of the system's is either invisible over the video or takes the click that dismisses the
     /// advertisement.
     ///
-    /// Their size comes from the DPI of the monitor the card is on, not the system's: the two are the same on a
-    /// single-monitor machine and differ on any other, and a card moved to a 100 per cent monitor beside a 150
-    /// per cent one would have controls half again too large - a label that overflows the card it belongs to.
-    /// Nothing here is measured against the card's own size, which is the other half of that: an advertisement
-    /// in a small window gets the same buttons as one on a large display, at the same size to the eye.
+    /// Their size comes from the card they are on rather than from the display, which is the one thing about
+    /// them that has been decided twice: it used to be the monitor's DPI, which is the same number for a card
+    /// the size of a screen and for one the size of a small window. See the comment on the size below, and
+    /// Capsule.Style, which no longer knows what a DPI is.
     /// </summary>
     private void MakeControls()
     {
         _controls = true;
 
         int w = _full.Right - _full.Left, h = _full.Bottom - _full.Top;
-        int dpi = (int)Native.GetDpiForWindow(_hwnd);
-        if (dpi < 48 || dpi > 480) dpi = (int)Native.GetDpiForSystem();
-        if (dpi < 48 || dpi > 480) dpi = 96;
-
         Capsule.Trace = Trace;
-        _style = new Capsule.Style(dpi);
-        int pad = Math.Max(2, (int)Math.Round(24 * dpi / 96.0));
+
+        // The controls follow the card rather than the display, and that is the whole of this: a capsule is a
+        // percentage of the card's shorter side, held between a floor and a ceiling.
+        //
+        // What it replaces is the monitor's scaling, which made every control the same size everywhere - right
+        // for a card that is the whole screen, and wrong for one that is an application window, where the three
+        // of them were as large as they are on a full screen and the name capsule could end up in the same band
+        // as the mute capsule in the corner. Sizing them from the card is what makes that impossible rather than
+        // unlikely: on a small card every control shrinks with it, and there is no display setting that can make
+        // them grow again. Nothing here asks the DPI anything any more.
+        //
+        // The floor is legibility and hit-area on a card small enough that the percentage would be a sliver; the
+        // ceiling is so that a card of the size of a large screen does not come out with a banner across it. The
+        // padding is half a capsule, which is the same relationship the fixed padding had.
+        int basis = Math.Min(w, h);
+        int height = Math.Max(MinControlPx, Math.Min(MaxControlPx, basis * ControlPercent / 100));
+        _style = new Capsule.Style(height);
+        // And the one the advertisement's own name is drawn in, which is the same capsule at one and a half
+        // times the size: the name is what the user is being told, and it is written over a picture.
+        _nameStyle = new Capsule.Style(height, NameTimes);
+        int pad = Math.Max(2, height / 2);
 
         // The countdown is the way out of an advertisement, so it goes where a way out is looked for: the top
         // right corner of the card. It used to be scattered round the four corners as a joke, which turned out
@@ -661,17 +736,99 @@ internal sealed class AdsCard
         // is pinned to is the one that must not move. The mute capsule is the other way round and is pinned by
         // its left edge at the bottom.
         _countdown = Capsule.Make(_hwnd, _style, _full.Left + w - pad, _full.Top + pad,
-                                 rightAligned: true, action: CaptionSkip);
+                                 Capsule.Anchor.Right, action: CaptionSkip);
         _countdown?.Set(string.Format(CaptionRemaining, Math.Max(0, _capSeconds)), Capsule.Glyph.None);
         _mute = Capsule.Make(_hwnd, _style, _full.Left + pad, _full.Top + h - pad - _style.Height,
-                             rightAligned: false, action: null);
+                             Capsule.Anchor.Left, action: null);
         _mute?.Set(_muted ? CaptionUnmute : CaptionMute, _muted ? Capsule.Glyph.Muted : Capsule.Glyph.Sound);
+
+        // And the third one, which says which advertisement this is: the name of the file that is playing and a
+        // search glyph beside it, at the lower part of the card. It is the widest thing that is allowed to be
+        // arbitrary here, so it has a ceiling: half the card's width, and a name longer than that is shortened
+        // with an ellipsis rather than run off the picture. A name that fits is shown as it is, with nothing on
+        // the end of it. See SetName and Shorten.
+        _labelCeiling = w * NameWidestPercent / 100;
+        SetName();
+        int nameW = Capsule.Measure(_nameStyle, _label, null, Capsule.Glyph.Search, iconRight: true).Width;
+        int nameY = _full.Top + h - h * NameFromBottomPercent / 100 - _nameStyle.Height / 2;
+        _name = Capsule.Make(_hwnd, _nameStyle, _full.Left + w / 2, nameY, Capsule.Anchor.Centre, action: null);
+        SetName();          // now that there is a capsule to say it to
         Look();
 
-        Say($"ads: controls at {dpi} dpi, a {_style.Height}px capsule - mute at {_full.Left + pad}," +
-            $"{_full.Top + h - pad - _style.Height}, countdown pinned to the right at {_full.Left + w - pad}," +
-            $"{_full.Top + pad}, {_style.Height} from the edges");
+        Say($"ads: controls on a card {w}x{h} ({basis} across its shorter side): a {_style.Height}px capsule" +
+            $" - mute at {_full.Left + pad},{_full.Top + h - pad - _style.Height}, countdown pinned to the" +
+            $" right at {_full.Left + w - pad},{_full.Top + pad}, {pad} from the edges; name \"{_label}\" " +
+            $"{nameW}px wide in a {_nameStyle.Height}px capsule at {_full.Left + w / 2 - nameW / 2},{nameY}," +
+            $" centred and {NameFromBottomPercent}% of the card's height up from its bottom " +
+            $"(widest {_labelCeiling}px)");
     }
+
+    /// <summary>
+    /// What the three controls' size comes from: a percentage of the card's shorter side, between a floor and a
+    /// ceiling. The floor is what keeps a very small window legible, and the ceiling is what keeps a very large
+    /// card from carrying a banner.
+    /// </summary>
+    private const int ControlPercent = 5, MinControlPx = 22, MaxControlPx = 72;
+
+    /// <summary>
+    /// How many times the size of the other two controls the name capsule is drawn at, how far up from the
+    /// bottom of the card its centre sits as a percentage of the card's height, and the widest it may be as a
+    /// percentage of the card's width. All three are looks rather than rules, and each of them is one number.
+    /// </summary>
+    private const double NameTimes = 1.5;
+    private const int NameFromBottomPercent = 20;
+    private const int NameWidestPercent = 50;
+
+    /// <summary>
+    /// What the name capsule says: the file that is playing, without its extension, shortened until it fits the
+    /// card.
+    ///
+    /// Called when the file changes rather than once, because a file that opens but turns out to be nothing long
+    /// is passed over and the next one takes its place - and a capsule naming the file that was skipped would be
+    /// a name for something that is not on screen. Nothing happens before the style exists, which is why this is
+    /// safe to call from Next as well.
+    /// </summary>
+    private void SetName()
+    {
+        _label = _file;
+        if (_nameStyle != null && _labelCeiling > 0)
+            _label = Shorten(_nameStyle, _file, _labelCeiling);
+        _name?.Set(_label, Capsule.Glyph.Search, iconRight: true);
+    }
+
+    /// <summary>
+    /// A file name short enough for the ceiling: the whole of it when it fits, and an ellipsis where it was cut
+    /// when it does not.
+    ///
+    /// The whole name is tried first and is returned unmarked, because an ellipsis on a name that is all there is
+    /// a lie about it: it says something was left out when nothing was. Only a name that does not fit is walked
+    /// down, one character at a time, until the shortened form fits - which is what the ellipsis means.
+    ///
+    /// Measured rather than counted, because what fits is a fact about the face and the DPI and not about how
+    /// many characters a name has: the same name is wider at 200 per cent, a Chinese name is twice the width of
+    /// a Latin one, and this capsule is drawn at one and a half times the other two on top of that. It is
+    /// measured with the glyph and the gap in place, so what is shortened is the width the capsule will really
+    /// be.
+    ///
+    /// Walking the name down a character at a time is enough for this and is written that way on purpose: it
+    /// runs when a file is chosen - twice per advertisement at the outside - and never while one is playing.
+    /// </summary>
+    private static string Shorten(Capsule.Style style, string name, int ceiling)
+    {
+        if (Fits(style, name, ceiling)) return name;
+        for (int keep = name.Length - 1; keep > 0; keep--)
+        {
+            string cut = name.Substring(0, keep) + "…";
+            if (Fits(style, cut, ceiling)) return cut;
+        }
+        // Nothing fits, not even one character and an ellipsis: the shortest form that still says which file this
+        // is, and a capsule a little wider than the card rather than no name at all.
+        return name.Length > 1 ? name.Substring(0, 1) + "…" : name;
+    }
+
+    /// <summary>Whether a name, as it would be drawn, is inside the ceiling.</summary>
+    private static bool Fits(Capsule.Style style, string name, int ceiling)
+        => Capsule.Measure(style, name, null, Capsule.Glyph.Search, iconRight: true).Width <= ceiling;
 
     /// <summary>
     /// What the two controls are showing, given where the cursor is and whether a press is being held.
@@ -688,6 +845,9 @@ internal sealed class AdsCard
         IntPtr over = ControlAt(p);
         _mute.Set(StateOf(_mute.Hwnd, over));
         _countdown.Set(StateOf(_countdown.Hwnd, over));
+        // The name capsule, which is the one control that is pressed rather than let go of: it has no state of
+        // its own beyond the two a press and a hover give it, and the swing goes on underneath either of them.
+        _name?.Set(StateOf(_name.Hwnd, over));
     }
 
     private Capsule.State StateOf(IntPtr control, IntPtr over)
@@ -695,10 +855,11 @@ internal sealed class AdsCard
          : over == control ? Capsule.State.Hover
          : Capsule.State.Normal;
 
-    /// <summary>Which of the two controls a point is inside, or nothing when it is anywhere else on the card.</summary>
+    /// <summary>Which of the controls a point is inside, or nothing when it is anywhere else on the card.</summary>
     private IntPtr ControlAt(POINT p)
     {
         if (On(MuteControl, out _, p)) return MuteControl;
+        if (On(NameControl, out _, p)) return NameControl;
         if (On(CountdownControl, out _, p)) return CountdownControl;
         return IntPtr.Zero;
     }
@@ -791,6 +952,7 @@ internal sealed class AdsCard
         Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, left, top, w, h, Native.SWP_NOACTIVATE);
         _mute?.Move(dx, dy);
         _countdown?.Move(dx, dy);
+        _name?.Move(dx, dy);
         Moved?.Invoke(dx, dy);
     }
 
@@ -833,6 +995,7 @@ internal sealed class AdsCard
     private string Where(IntPtr control)
         => control == IntPtr.Zero ? "on the card"
          : control == _mute?.Hwnd ? "on the mute control"
+         : control == _name?.Hwnd ? "on the name control"
          : "on the countdown";
 
     /// <summary>The capture going somewhere else, which cancels the press the same way letting go off it does.</summary>
@@ -858,6 +1021,24 @@ internal sealed class AdsCard
             Say($"ads: a click at {p.X},{p.Y} is on the mute control " +
                 $"({mute.Left},{mute.Top} {mute.Right - mute.Left}x{mute.Bottom - mute.Top})");
             ToggleMute();
+            return;
+        }
+
+        // The name capsule is a way out of the advertisement in the other direction: it says what this is, and
+        // pressing it looks that up. It comes before the two rules below because it is a control, and because a
+        // click on the logon card closes it - which would make the one control that does something else close
+        // the advertisement instead of searching.
+        if (On(NameControl, out var name, p))
+        {
+            Say($"ads: a click at {p.X},{p.Y} is on the name control " +
+                $"({name.Left},{name.Top} {name.Right - name.Left}x{name.Bottom - name.Top})");
+            // Search first, and then close - on the logon card only. That card covers the whole screen, so the
+            // browser it has just asked for is behind it and it has to go, which is what a click anywhere on it
+            // already does. The window advertisement is left alone by this: it stands in for a window the user was
+            // about to use, and its countdown is its way out. The search is asked for before the close so that the
+            // URL has been handed over before the card starts taking itself down.
+            SearchTheName();
+            if (_grow) Close();
             return;
         }
 
@@ -891,6 +1072,50 @@ internal sealed class AdsCard
         if (control == IntPtr.Zero || !Native.GetWindowRect(control, out rect)) return false;
         return p.X >= rect.Left && p.X < rect.Right && p.Y >= rect.Top && p.Y < rect.Bottom;
     }
+
+    /// <summary>
+    /// Searches for what the name capsule says, through <see cref="Searched" />. Nothing happens when there is
+    /// nothing to search for, which is the empty name of a file that had none.
+    /// </summary>
+    private void SearchTheName()
+    {
+        string url = SearchUrlFor(_label);
+        if (url.Length == 0) { Say("ads: there is no name to search for"); return; }
+        Say($"ads: searching for \"{_label}\" at {url}");
+        if (Searched == null) { Say("ads: nothing is listening for that search"); return; }
+        try { Searched(url); }
+        catch (Exception ex) { Say($"ads: the search would not be handed over ({ex.GetType().Name}: {ex.Message})"); }
+    }
+
+    /// <summary>
+    /// The URL that searches for <paramref name="name" />, or an empty string when there is nothing to search
+    /// for.
+    ///
+    /// Everything about how a file in the Ads folder could get at the shell is in these four lines, so they are
+    /// the ones to read. A file's *name* is the only thing this program ever takes from a file a stranger may
+    /// have put there, and here it is a query value and nothing else:
+    ///
+    ///   * the scheme and the host are our own constant and come first, so a name cannot choose them. It cannot
+    ///     arrive as file:, javascript:, search-ms:, ms-settings: or a UNC path, because nothing before the name
+    ///     is under its control;
+    ///   * the name is percent-encoded, so &amp; ? # % + / \ and every control character in it are inert: no
+    ///     extra parameter, no end of the query, no fragment, no second URL, no line break;
+    ///   * it is cut to a length first, so no name can produce a URL of a size of its own choosing;
+    ///   * and what comes out of here is the only thing the shell is ever handed - see Searched. The name is
+    ///     never passed as a file, a path, a parameter or a working directory.
+    ///
+    /// It is internal and takes its prefix from the field rather than a parameter so that probe/media can check
+    /// the invariants above on strings of its own, with no browser launched.
+    /// </summary>
+    internal static string SearchUrlFor(string name)
+    {
+        if (name.Length == 0 || SearchUrl.Length == 0) return "";
+        if (name.Length > SearchTextMax) name = name.Substring(0, SearchTextMax);
+        return SearchUrl + Uri.EscapeDataString(name);
+    }
+
+    /// <summary>How much of a file's name is searched for, in characters of the name rather than of the URL.</summary>
+    private const int SearchTextMax = 120;
 
     private void ToggleMute()
     {
@@ -932,14 +1157,19 @@ internal sealed class AdsCard
         // away. They are made once and not remade, so this is the end of them for this card.
         _mute?.Hide();
         _countdown?.Hide();
+        _name?.Hide();
 
-        // The first frame in place of whatever mfplay leaves on screen when playback has run out, which is
+        // The last frame in place of whatever mfplay leaves on screen when playback has run out, which is
         // nothing - a black card, and a black card is a worse thing to collapse than the advertisement itself.
+        // The last frame rather than the first, which is what this used to put up: the first frame of an
+        // advertisement is the one frame of it that belongs to nothing the user has been watching. See
+        // MediaPlayer.HoldLastFrame.
         //
         // And then a couple of frames of standing still before the collapse starts, because the seek does not
-        // put the frame on screen the instant it returns: rewinding and collapsing in the same breath is a
-        // collapse over the black the rewind was meant to remove, which is what it looked like the first time.
-        Say($"ads: back to the first frame: {_player?.Rewind() ?? false}");
+        // put the frame on screen the instant it returns: seeking and collapsing in the same breath is a
+        // collapse over the black the seek was meant to remove, which is what it looked like the first time.
+        // What it landed on is logged by the first step of the collapse, not here; see Step.
+        _heldFrame = _player?.HoldLastFrame() ?? false;
         _collapseAt = (int)Now + HoldMs;
         // The step spacings start again here, so that the collapse's report is about the collapse: what is being
         // asked is how evenly the shrink was sampled, and the sixteen-millisecond countdown steps before it are
@@ -1053,8 +1283,12 @@ internal sealed class AdsCard
         _mute = null;
         _countdown?.Dispose();
         _countdown = null;
+        _name?.Dispose();
+        _name = null;
         _style?.Dispose();
         _style = null;
+        _nameStyle?.Dispose();
+        _nameStyle = null;
         _player?.Dispose();
         _player = null;
         _hwnd = IntPtr.Zero;

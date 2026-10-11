@@ -299,15 +299,60 @@ internal sealed class MediaPlayer : IDisposable
 
     /// <summary>
     /// Back to the beginning and held there, so that what is on screen is the first frame. True when the player
-    /// took it, and the caller says so in the log: a seek that quietly did nothing would leave the black card
-    /// this exists to remove.
+    /// took it.
     ///
-    /// For the moment an advertisement ends: mfplay leaves the video window showing nothing once playback has
-    /// run out, which is a black card, and a black card is a worse thing to collapse than the advertisement's
-    /// own first frame. Seeking back and pausing leaves that frame up instead, and it costs two calls rather
-    /// than the bitmap a poster frame would need.
+    /// Nothing in the program calls this any more - the countdown hands over to the last frame now, see
+    /// HoldLastFrame - and it is kept because it is the other half of that measurement: what the advertisement
+    /// used to collapse over is the control the new frame is compared against, and probe/media photographs both.
     /// </summary>
     public bool Rewind()
+    {
+        _player?.Pause();
+        return SeekTo(0);
+    }
+
+    /// <summary>
+    /// The last frame of the file, on screen and held there. True when the player took it.
+    ///
+    /// For the moment an advertisement ends: mfplay leaves the video window showing nothing once playback has
+    /// run out, which is a black card, and a black card is a worse thing to collapse than the advertisement
+    /// itself. What used to be put up instead was the first frame - and the first frame of an advertisement is
+    /// the one frame in it that belongs to no part of what the user has just been watching. The last frame is
+    /// the one the picture actually stopped on.
+    ///
+    /// The position is a frame's length short of the end rather than the end itself, and that is the one number
+    /// here that was tuned rather than derived: a seek to exactly the length is a seek to a position no frame
+    /// starts at, and some sources answer it with nothing at all - which is the black card this exists to
+    /// remove. See probe/media for the measurement.
+    /// </summary>
+    public bool HoldLastFrame()
+    {
+        if (_player == null) return false;
+        // Paused before the seek rather than after it: a seek while playing carries on playing from the new
+        // position, and the frame that ends up on screen is then however far the probe or the card pumped
+        // past it. Paused first, the frame presented is the frame that was asked for.
+        _player.Pause();
+        long at = DurationMs < 0 ? 0 : Math.Max(0, DurationMs - LastFrameBackMs);
+        return SeekTo(at);
+    }
+
+    /// <summary>How far short of the end the last frame is asked for, in milliseconds. See HoldLastFrame.</summary>
+    private const int LastFrameBackMs = 40;
+
+    /// <summary>
+    /// Moves the player to a position in the file, in milliseconds. The seek is the whole of it: SetPosition
+    /// moves the player and the picture with it, measured with probe/media at 93 per cent of the card's pixels
+    /// either side of one.
+    ///
+    /// The pause that precedes it belongs to the caller and it matters, which was measured too: a seek on a
+    /// player that is playing carries on playing from the new position, so what is left on screen is however
+    /// long the caller then pumped past the position it asked for. Paused first, the frame presented is the
+    /// frame that was asked for.
+    ///
+    /// The position is moved through a PROPVARIANT: a VT_I8 and a count of hundreds of nanoseconds, which is the
+    /// only unit mfplay takes. Internal because probe/media seeks too, to play a file out to its end.
+    /// </summary>
+    internal bool SeekTo(long ms)
     {
         if (_player == null) return false;
         try
@@ -316,16 +361,37 @@ internal sealed class MediaPlayer : IDisposable
             try
             {
                 Marshal.WriteInt16(pv, 20 /* VT_I8 */);
-                Marshal.WriteInt64(pv, 8, 0);
+                Marshal.WriteInt64(pv, 8, ms * 10000L);
                 var key = MfPlay.PositionType100ns;
                 int hr = _player.SetPosition(ref key, pv);
                 if (hr < 0) { Fail($"SetPosition 0x{hr:X8}"); return false; }
+                return true;
             }
             finally { Marshal.FreeCoTaskMem(pv); }
-            _player.Pause();
-            return true;
         }
         catch { return false; }
+    }
+
+    /// <summary>Where the player says it is, in milliseconds, or -1 when it will not say.</summary>
+    public long PositionMs
+    {
+        get
+        {
+            if (_player == null) return -1;
+            IntPtr pv = Marshal.AllocCoTaskMem(32);
+            try
+            {
+                Marshal.WriteInt16(pv, 0);
+                var key = MfPlay.PositionType100ns;
+                if (_player.GetPosition(ref key, pv) < 0) return -1;
+                short type = Marshal.ReadInt16(pv);
+                if (type != 20 && type != 21) return -1;
+                long hns = Marshal.ReadInt64(pv, 8);
+                return hns < 0 ? -1 : hns / 10000;
+            }
+            catch { return -1; }
+            finally { Marshal.FreeCoTaskMem(pv); }
+        }
     }
 
     public bool Muted

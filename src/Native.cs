@@ -775,12 +775,269 @@ internal static class Native
         return n > 0 ? text.ToString(0, n) : "";
     }
 
-    /// <summary>The program's one way out to the browser, used by the About box's link.</summary>
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr ShellExecuteW(IntPtr hwnd, string operation, string file,
-                                              string? parameters, string? directory, int show);
+    // ---- opening a URL at the user's own level, with no ShellExecute anywhere -------------------------------
 
-    public const int SW_SHOWNORMAL = 1;
+    /// <summary>
+    /// What Windows has registered to handle a URL scheme, as the program that will be run, or null when it has
+    /// nothing registered at all - which means no web address can be opened and is the answer to "is there a
+    /// browser here" that costs nothing to ask. It is a query rather than a launch: nothing starts, and nothing
+    /// is shown to anybody.
+    ///
+    /// ASSOCSTR_EXECUTABLE, and asking the shell rather than reading the registry: the mapping moves as the user
+    /// changes their default browser, and the settings that hold it are not in one documented place - on the
+    /// machine this was written on, HKCR's https handler says iexplore.exe while the answer here is a Chromium
+    /// build, and only one of those is what would actually open.
+    /// </summary>
+    internal static string? HandlerFor(string scheme)
+    {
+        var text = new StringBuilder(1024);
+        uint length = (uint)text.Capacity;
+        int hr = AssocQueryStringW(0 /* ASSOCF_NONE */, 2 /* ASSOCSTR_EXECUTABLE */, scheme, "open",
+                                   text, ref length);
+        return hr < 0 || text.Length == 0 ? null : text.ToString();
+    }
+
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int AssocQueryStringW(uint flags, uint what, string assoc, string extra,
+                                                StringBuilder buffer, ref uint length);
+
+    /// <summary>
+    /// Opens a URL the way the user's own shell would, and says why not when it cannot.
+    ///
+    /// The policy is here and the mechanism is <see cref="AskExplorer" />. Two questions are asked first, and
+    /// both are answered without starting anything: is there anything on this machine that opens an https address
+    /// at all - a machine with no browser is what the caller puts a message box up for - and is the URL one of
+    /// ours? The second is a shape, not a check on the string: a URL that does not begin with https:// is not
+    /// something this program ever has a reason to open, and the only two callers build theirs from a constant.
+    /// </summary>
+    internal static bool OpenAsUser(string url, out string why)
+    {
+        why = "";
+        if (url.Length == 0) { why = "there is no URL to open"; return false; }
+        if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            why = "the URL is not one of ours, and nothing else is opened from this process";
+            return false;
+        }
+        if (HandlerFor("https") is not string browser)
+        {
+            why = "nothing is registered to open an https address, so there is no browser to search with";
+            return false;
+        }
+
+        // A URL is the only argument Explorer is given here, and it always begins with https:// - so it cannot
+        // be one of Explorer's own switches - and it is percent-encoded, so it cannot be two arguments.
+        if (!AskExplorer("\"" + url + "\"", out why)) return false;
+        why += $", which is what hands the address to {browser}";
+        return true;
+    }
+
+    /// <summary>
+    /// Runs Explorer with a command line, as the user rather than as this process. False with the reason when it
+    /// cannot.
+    ///
+    /// There is no ShellExecute here and that is the point of the whole method: ShellExecute starts the program
+    /// from *this* process, so it inherits what this process is - and this one runs as administrator. What is
+    /// done instead is that the process is created with the token of the running shell, which is at the user's own
+    /// integrity level, and that what is created is Explorer, which is what knows how to turn a URL or a /select
+    /// into the right application. That also means nothing here knows or cares which browser the user has, or
+    /// where they keep it.
+    ///
+    /// Three things about the details, all of them measured rather than reasoned:
+    ///
+    ///   * The command line names the program and then gives it the arguments. That is the shape every
+    ///     ShellExecute produces and the one a program's own command-line parsing expects; the same URL handed
+    ///     over without the name in front was forwarded late or not at all.
+    ///   * The token comes from the shell's own window (GetShellWindow is the desktop), and a token read out of a
+    ///     process is already a primary one, so nothing has to be duplicated. The integrity level of what comes
+    ///     out can be read back, which is what the caller logs and what probe/folder measures: see IntegrityOf.
+    ///   * If creating the process with that token fails, the second attempt creates it with this program's own -
+    ///     the one case where a process is started carrying this program's rights. It is worth having anyway: it
+    ///     is Explorer, which is created only to hand one command line to the shell that is *already running*
+    ///     (the token above could only be read because it is), and the browser is still opened by that shell at
+    ///     the user's level. It is also the half of this that can be exercised on a machine where the first half
+    ///     cannot be, which is what it was tested with; and it is only tried when there is a running shell, so a
+    ///     machine with no Explorer is never given one of ours.
+    ///
+    /// It needs SeImpersonatePrivilege for the first attempt, which the program has because it runs as
+    /// administrator - and which is exactly why that attempt can only be exercised by the program and never by a
+    /// console that is not elevated. A console can still try both: probe/folder --open.
+    /// </summary>
+    internal static bool AskExplorer(string arguments, out string why)
+    {
+        why = "";
+        // The full path rather than the name: CreateProcess searches for a bare name, and what it searches is a
+        // list this program does not control.
+        string explorer = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+        string command = "\"" + explorer + "\" " + arguments;
+
+        IntPtr token = ShellToken();
+        if (token == IntPtr.Zero)
+        {
+            // No shell window means no Explorer is running, and the only thing this could start is a shell of our
+            // own at this program's integrity level - which is the thing all of this exists to avoid.
+            why = "there is no shell window to take a token from, so nothing was started";
+            return false;
+        }
+
+        try
+        {
+            if (Create(token, explorer, command, out string asShell))
+            {
+                why = $"explorer.exe started at {asShell} with the shell's own token";
+                return true;
+            }
+            if (Create(IntPtr.Zero, explorer, command, out string asOurs))
+            {
+                why = $"the shell's token did not work ({asShell}), so explorer.exe was started directly at " +
+                      $"{asOurs} instead";
+                return true;
+            }
+            why = $"neither starting explorer.exe with the shell's token ({asShell}) nor with this process's " +
+                  $"({asOurs}) worked";
+            return false;
+        }
+        finally { CloseHandle(token); }
+    }
+
+    /// <summary>
+    /// Creates one process, with <paramref name="token" /> or with this process's own when that is zero, and the
+    /// integrity level it came out at as the reason it worked.
+    /// </summary>
+    private static bool Create(IntPtr token, string application, string command, out string why)
+    {
+        why = "";
+        var start = new STARTUPINFOW { Cb = Marshal.SizeOf<STARTUPINFOW>() };
+        PROCESS_INFORMATION info = default;
+        bool ok;
+        if (token == IntPtr.Zero)
+            ok = CreateProcessW(application, command, IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, null,
+                                ref start, out info);
+        else
+            ok = CreateProcessWithTokenW(token, 0 /* no logon flags */, application, command, 0, IntPtr.Zero, null,
+                                         ref start, out info);
+        if (!ok)
+        {
+            int err = Marshal.GetLastWin32Error();
+            why = (token == IntPtr.Zero ? "CreateProcess" : "CreateProcessWithTokenW") + $" failed with {err}" +
+                  (err is 5 or 1314   /* ACCESS_DENIED, ERROR_PRIVILEGE_NOT_HELD */
+                       ? ", which is what starting something at the user's own level costs: it needs a program" +
+                         " that is running as administrator to pay it"
+                       : "");
+            return false;
+        }
+        try
+        {
+            // Said as what was created rather than as what was asked for: it is read off the process that came
+            // out, and it is the whole of what "the browser is not elevated" rests on.
+            why = $"{IntegrityOf(info.HProcess)} integrity";
+        }
+        finally
+        {
+            CloseHandle(info.HThread);
+            CloseHandle(info.HProcess);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// The token of the running shell, or zero when there is no shell window to take it from - which is a
+    /// machine where Explorer is not running, and which has no desktop to open a browser on in any case. The
+    /// caller owns the handle.
+    /// </summary>
+    private static IntPtr ShellToken()
+    {
+        IntPtr shell = GetShellWindow();
+        if (shell == IntPtr.Zero) return IntPtr.Zero;
+        GetWindowThreadProcessId(shell, out uint pid);
+        if (pid == 0) return IntPtr.Zero;
+
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero) return IntPtr.Zero;
+        try
+        {
+            return OpenProcessToken(process, TOKEN_DUPLICATE | TOKEN_QUERY, out IntPtr token) ? token
+                                                                                              : IntPtr.Zero;
+        }
+        finally { CloseHandle(process); }
+    }
+
+    /// <summary>
+    /// How privileged a process is, as the name of its integrity level: "Medium" for anything the user starts,
+    /// "High" for anything a program running as administrator starts. It is here because that is the whole of
+    /// what "the browser is not elevated" means, and because it can be read back rather than claimed - the
+    /// caller writes it to the log, and probe/folder measures the shell's own.
+    ///
+    /// An integrity level is a SID whose last part is the level: 0x1000 medium, 0x2000 high, 0x3000 system.
+    /// </summary>
+    internal static string IntegrityOf(IntPtr process)
+    {
+        if (process == IntPtr.Zero || !OpenProcessToken(process, TOKEN_QUERY, out IntPtr token)) return "unknown";
+        try
+        {
+            // The size is asked for first, with a null buffer - which fails, and says how much is needed.
+            GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out uint size);
+            if (size < 8 || size > 4096) return "unknown";
+            IntPtr buffer = Marshal.AllocHGlobal((int)size);
+            try
+            {
+                if (!GetTokenInformation(token, TokenIntegrityLevel, buffer, size, out _)) return "unknown";
+                IntPtr sid = Marshal.ReadIntPtr(buffer);           // TOKEN_MANDATORY_LABEL.Label.Sid
+                if (sid == IntPtr.Zero) return "unknown";
+                int parts = Marshal.ReadByte(sid, 1);              // revision, count, authority, then the parts
+                if (parts < 1) return "unknown";
+                uint rid = (uint)Marshal.ReadInt32(sid, 8 + (parts - 1) * 4);
+                return rid switch
+                {
+                    0x0000 => "Untrusted",
+                    0x1000 => "Low",
+                    0x2000 => "Medium",
+                    0x2100 => "Medium plus",
+                    0x3000 => "High",
+                    0x4000 => "System",
+                    _ => $"0x{rid:X4}",
+                };
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        finally { CloseHandle(token); }
+    }
+
+    private const uint TOKEN_DUPLICATE = 0x0002, TOKEN_QUERY = 0x0008;
+    private const int TokenIntegrityLevel = 25;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(IntPtr token, int what, IntPtr info, uint size, out uint needed);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string? application,
+                                                       string commandLine, uint flags, IntPtr environment,
+                                                       string? directory, ref STARTUPINFOW startup,
+                                                       out PROCESS_INFORMATION process);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(string? application, string commandLine, IntPtr processAttributes,
+                                              IntPtr threadAttributes, bool inheritHandles, uint flags,
+                                              IntPtr environment, string? directory, ref STARTUPINFOW startup,
+                                              out PROCESS_INFORMATION process);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct STARTUPINFOW
+    {
+        public int Cb;
+        public string? LpReserved, LpDesktop, LpTitle;
+        public int DwX, DwY, DwXSize, DwYSize, DwXCountChars, DwYCountChars, DwFillAttribute, DwFlags;
+        public short WShowWindow, CbReserved2;
+        public IntPtr LpReserved2, HStdInput, HStdOutput, HStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_INFORMATION
+    {
+        public IntPtr HProcess, HThread;
+        public int Pid, Tid;
+    }
 
     /// <summary>
     /// The system's dark theme, reached - on Windows 10 - through entry points in uxtheme.dll that Microsoft

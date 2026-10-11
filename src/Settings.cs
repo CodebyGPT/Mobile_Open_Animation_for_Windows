@@ -411,6 +411,24 @@ internal static class Strings
     private static Lang _lang = Lang.English;
     public static void Use(Lang l) => _lang = l;
 
+    /// <summary>Which language the strings are in, for a caller that wants to put it back.</summary>
+    public static Lang Language => _lang;
+
+    /// <summary>
+    /// Where a click on an advertisement's own name searches, and the one string in this file that nobody is
+    /// shown: it is handed to the shell, see AdsCard.SearchUrlFor, which is what turns a file's name into the
+    /// part that follows the query key. Per language because the useful engine is - Google for an English
+    /// interface and Baidu for a Chinese one is the whole of the rule - and because Windows has no notion of a
+    /// "default search engine" at all: that setting belongs to each browser and is not published to anything.
+    ///
+    /// Both are https URLs that end in their own query key, and that is a requirement rather than a style: what
+    /// is appended to them is a file's name, and the scheme, host and key being ours is what keeps it a search
+    /// term rather than anything else. See AdsCard.SearchUrlFor for the rest of that argument.
+    /// </summary>
+    public static string SearchUrl => _lang == Lang.ChineseSimplified
+        ? "https://www.baidu.com/s?wd="
+        : "https://www.google.com/search?q=";
+
     private static readonly Dictionary<string, (string en, string zh)> Map = new()
     {
         ["Language"]     = ("Language", "语言"),

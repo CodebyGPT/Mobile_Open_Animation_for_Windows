@@ -164,15 +164,10 @@ internal static class AboutDialog
     private static void Open(string url)
     {
         if (url.Length == 0) return;
-        Log.Write($"about: opening {url}");
-        try
-        {
-            Native.ShellExecuteW(IntPtr.Zero, "open", url, null, null, Native.SW_SHOWNORMAL);
-        }
-        catch (Exception ex)
-        {
-            Log.Write($"about: could not open {url} ({ex.GetType().Name}: {ex.Message})");
-        }
+        // Through the same door the advertisement's name uses, and for the same reason: this program runs as
+        // administrator, and a browser started by it would be too. See Native.OpenAsUser.
+        bool opened = Native.OpenAsUser(url, out string why);
+        Log.Write(opened ? $"about: opening {url} - {why}" : $"about: could not open {url}: {why}");
     }
 
     // ---- what the box does about the code -------------------------------------------------------------

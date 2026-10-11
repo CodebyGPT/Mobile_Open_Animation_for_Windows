@@ -394,6 +394,22 @@ internal static class Program
         AdsCard.CaptionRemaining = Strings.T("AdsRemaining");
         AdsCard.CaptionSkip = Strings.T("AdsSkip");
         AdsCard.MuteRemembered = m => { _s.AdsMuted = m; _s.Save(); };
+        // The advertisement's own name, clicked: the card builds the URL and this is the only thing that
+        // launches anything. It goes to the shell as a URL to open, which is what hands it to whichever browser
+        // the user has, with nothing in this program knowing or caring which that is - see Strings.SearchUrl for
+        // the two engines and AdsCard.SearchUrlFor for why a file's name cannot be anything but a search term in
+        // it. A path, a file name or a command line is never passed to the shell from here: an advertisement can
+        // be a file somebody else put in the folder, and "open this file" on one of those is what runs it.
+        AdsCard.SearchUrl = Strings.SearchUrl;
+        AdsCard.Searched = url =>
+        {
+            // Nothing is said to the user about this either way: a search that cannot be opened fails, and what
+            // it failed at is written to the log - which is written at all only when Debug mode is on. See
+            // Log.Write. A popup over an advertisement for a click that did not work is a second thing to dismiss.
+            bool opened = Native.OpenAsUser(url, out string why);
+            Log.Write(opened ? $"ads: searching, {url}" + (why.Length == 0 ? "" : $" - {why}")
+                             : $"ads: the search was not opened: {why}");
+        };
         AdsCard.Curve = Animator.Ease;
         AdsCard.CollapseMs = _s.DurationMs;
         AdsCard.FrameMs = (int)Math.Round(_anim.FrameMs);
@@ -599,11 +615,12 @@ internal static class Program
                 break;
             }
             case MenuConfig:
-                try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + Settings.IniPath + "\""); }
-                catch (Exception ex)
-                {
-                    Log.Write($"open config folder failed: {ex.GetType().Name}: {ex.Message}");
-                }
+                // Through the shell's own token like everything else that starts a program for the user: from
+                // this process, which is running as administrator, an Explorer window opened the obvious way is an
+                // Explorer window with administrator rights. The path is ours - the ini beside the program - and
+                // not anything out of the Ads folder.
+                if (!Native.AskExplorer("/select,\"" + Settings.IniPath + "\"", out string whyNot))
+                    Log.Write($"open config folder failed: {whyNot}");
                 break;
             case MenuAbout:
                 // A task dialog, not a message box: it is the only system dialog that draws a link that can

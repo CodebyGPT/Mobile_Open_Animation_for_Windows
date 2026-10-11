@@ -1,5 +1,6 @@
-// The two controls an advertisement carries: a capsule that says how much of the video is left and how to
-// leave early, and a capsule that turns the sound off and on.
+// The three controls an advertisement carries: a capsule that says how much of the video is left and how to
+// leave early, a capsule that turns the sound off and on, and a capsule that names the file that is playing with
+// a search glyph beside it - the last of which swings, which is the one piece of movement in this file.
 //
 // Four decisions worth writing down, because each of them is the opposite of the obvious one:
 //
@@ -10,10 +11,13 @@
 //     of it, and the two strengths are different, so the pill has to be per-pixel alpha: a window of its own
 //     with WS_EX_LAYERED, every pixel of it drawn here, and UpdateLayeredWindow handed the result.
 //
-//   * The icon is drawn as paths rather than decoded from an SVG. There is no SVG renderer in this program and
+//   * The icons are drawn as paths rather than decoded from an SVG. There is no SVG renderer in this program and
 //     taking one on would be a dependency, a download and a parse for two small pictures. A speaker is a
-//     polygon and two arcs, and paths are the right shape for this anyway: they are the same picture at every
-//     DPI, where a bitmap would have to be picked by size and would be soft between the sizes.
+//     polygon and two arcs, a magnifier is a ring and a line, and paths are the right shape for this anyway:
+//     they are the same picture at every DPI, where a bitmap would have to be picked by size and would be soft
+//     between the sizes. The magnifier's own numbers are read out of the SVG it was drawn from - which is in the
+//     repository's icon folder - and divided by that file's 960-unit box, so it is the system's own picture
+//     rather than an imitation of it. See Search.
 //
 //   * Every size comes from the height, and the height comes only from the scaling of the monitor the card is
 //     on. Not from the card, and not from the window being advertised: a control that shrank with the window
@@ -23,8 +27,9 @@
 //     screen: both ends are a standard semicircle - the radius is exactly half the height - and the outermost
 //     thing inside is placed so that its centre is half the height from the side it is nearest, which is the
 //     same distance as from the top and the bottom. That last one is the centre of the round end, so the
-//     outermost thing sits in the cap the way the dot sits in a circle: the icon in the mute capsule, and the
-//     last character of the label in both. See Measure, which is where the rule is and where it is explained.
+//     outermost thing sits in the cap the way the dot sits in a circle: an icon where there is one - the speaker
+//     in the mute capsule, the magnifier on the right of the name - and the last character of the label in both.
+//     See Measure, which is where the rule is and where it is explained.
 
 using System;
 using System.Drawing;
@@ -39,8 +44,19 @@ internal sealed class Capsule
     /// <summary>The three looks a capsule has, and the only thing a click and the cursor change.</summary>
     internal enum State { Normal, Hover, Pressed }
 
-    /// <summary>The picture a capsule can carry to its left. None is the countdown, which is all words.</summary>
-    internal enum Glyph { None, Sound, Muted }
+    /// <summary>
+    /// The picture a capsule can carry. None is the countdown, which is all words; Sound and Muted go to the
+    /// left of the mute capsule's label, and Search goes to the right of the advertisement's own name.
+    /// </summary>
+    internal enum Glyph { None, Sound, Muted, Search }
+
+    /// <summary>
+    /// Which point of a capsule its anchor is. Left and Right are the corners it is pinned by, for the two
+    /// controls pinned to a corner of the card; Centre is for the one whose text can change while it is up -
+    /// the advertisement's name, which is shortened when the card is narrow, and a left-pinned capsule would
+    /// drift off centre every time it did. See Paint.
+    /// </summary>
+    internal enum Anchor { Left, Right, Centre }
 
     /// <summary>
     /// Where a capsule says something went wrong. Pointed at the card's own trace by the card, for the same
@@ -68,19 +84,27 @@ internal sealed class Capsule
     /// </summary>
     internal sealed class Style : IDisposable
     {
-        private const int BaseHeight = 46;                // at 96 DPI, which is 100 per cent scaling
-
         public readonly int Height, Radius, Gap, Icon, FontPx;
         public readonly Font Font;
 
-        public Style(int dpi)
+        /// <summary>
+        /// Everything about a capsule's size, from the one number the caller has already decided about: how tall
+        /// it is. There is no DPI here and that is deliberate - the height comes from the card the capsule sits
+        /// on, so the same window looks the same on any display, and a control cannot come out too big for a
+        /// small card because a monitor happens to be scaled. See AdsCard.MakeControls, which is where the
+        /// height is worked out.
+        ///
+        /// <paramref name="times" /> is how many times that height this particular one is: every other number
+        /// below is a fraction of the height, so one multiplier scales the lot - the pill, the corner, the glyph
+        /// and the font - and nothing can end up out of proportion with the rest of itself. The advertisement's
+        /// own name is drawn at one and a half times the other two, and that is the only use of it.
+        /// </summary>
+        public Style(int height, double times = 1)
         {
-            // A DPI outside this is not a display, it is a call that failed: 0 from a window that does not
-            // exist yet, or a number from a driver that has lost its mind. 96 is the answer that draws
-            // something sensible, which is better than the nothing an unchecked scale would draw.
-            if (dpi < 48 || dpi > 480) dpi = 96;
-
-            Height = Math.Max(18, (int)Math.Round(BaseHeight * dpi / 96.0));
+            // A height outside this is not a card, it is a call that failed: a rectangle that had no height
+            // when the controls were asked for. 18 is the answer that draws something legible, which is better
+            // than the nothing an unchecked size would draw.
+            Height = Math.Max(18, (int)Math.Round(height * times));
             Radius = Height / 2;                          // a standard semicircle, exactly half the height
             Gap = Math.Max(2, (int)Math.Round(Height * 0.24));
             Icon = Math.Max(8, (int)Math.Round(Height * 0.52));
@@ -163,7 +187,7 @@ internal sealed class Capsule
     /// capsule is drawn from the edge rather than outside it, which is the one case where the rule is broken to
     /// keep the label inside its own button.
     /// </summary>
-    internal static Layout Measure(Style st, string text, string? action, Glyph icon)
+    internal static Layout Measure(Style st, string text, string? action, Glyph icon, bool iconRight = false)
     {
         using var g = Graphics.FromHwnd(IntPtr.Zero);
         var fmt = StringFormat.GenericTypographic;
@@ -173,14 +197,17 @@ internal sealed class Capsule
         int sepW = action == null ? 0 : Width(g, st.Font, fmt, Separator);
         int actW = action == null ? 0 : Width(g, st.Font, fmt, action);
 
-        int leftW = iconW > 0 ? iconW : Atom(g, st.Font, fmt, text, first: true);
-        int rightW = action != null ? Atom(g, st.Font, fmt, action, first: false)
-                                    : Atom(g, st.Font, fmt, text, first: false);
+        // The glyph is the outermost thing on the side it is on, so it is the glyph's width the padding is
+        // measured from there, and a character of the label's otherwise. See the rule above.
+        int leftW = iconW > 0 && !iconRight ? iconW : Atom(g, st.Font, fmt, text, first: true);
+        int rightW = iconW > 0 && iconRight ? iconW
+                   : action != null ? Atom(g, st.Font, fmt, action, first: false)
+                   : Atom(g, st.Font, fmt, text, first: false);
         int padL = Math.Max(0, st.Height / 2 - leftW / 2);
         int padR = Math.Max(0, st.Height / 2 - rightW / 2);
 
         int x = padL, iconX = x;
-        if (iconW > 0) x += iconW + st.Gap;
+        if (iconW > 0 && !iconRight) x += iconW + st.Gap;
         int textX = x;
         x += textW;
         int sepX = 0, actionX = 0;
@@ -190,12 +217,19 @@ internal sealed class Capsule
             actionX = sepX + sepW + st.Gap;
             x = actionX + actW;
         }
+        if (iconW > 0 && iconRight)
+        {
+            iconX = x + st.Gap;
+            x = iconX + iconW;
+        }
         int width = x + padR;
 
         // The right-hand one is worked out from the right edge of the thing it belongs to, because that is the
         // edge the padding was measured from.
-        int outerLeftX = iconW > 0 ? iconX : textX;
-        int outerRightX = action != null ? actionX + actW - rightW : textX + textW - rightW;
+        int outerLeftX = iconW > 0 && !iconRight ? iconX : textX;
+        int outerRightX = iconW > 0 && iconRight ? iconX + iconW - rightW
+                        : action != null ? actionX + actW - rightW
+                        : textX + textW - rightW;
         return new Layout(width, st.Height, st.Radius, iconX, iconW, textX, textW, sepX, sepW,
                           actionX, actW, outerLeftX, leftW, outerRightX, rightW);
     }
@@ -233,9 +267,9 @@ internal sealed class Capsule
     /// be confused with each other or with the picture.
     /// </summary>
     internal static Bitmap Render(Style st, string text, string? action, Glyph icon, State state,
-                                  out Layout layout)
+                                  out Layout layout, bool iconRight = false, float spin = 0f)
     {
-        layout = Measure(st, text, action, icon);
+        layout = Measure(st, text, action, icon, iconRight);
         var bmp = new Bitmap(layout.Width, layout.Height, PixelFormat.Format32bppPArgb);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -277,9 +311,36 @@ internal sealed class Capsule
             }
         }
 
-        if (icon != Glyph.None) Speaker(g, icon, layout, ink);
+        if (icon != Glyph.None) DrawGlyph(g, icon, layout, ink, iconRight, spin);
         return bmp;
     }
+
+    // ---- the swing ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// How far the search glyph is turned, in degrees, at a given moment on the card's own clock.
+    ///
+    /// A to-and-fro swing of a third of a second to each side, three of them, and then a second of standing
+    /// still, which is the whole of what the movement is. The four numbers below are the tuning knobs: a swing
+    /// that never stops is a distraction rather than a hint, and one that never comes back is a control that
+    /// looks broken, so the rest is as much a part of it as the movement.
+    /// A sine rather than a linear ramp, because that is what a swinging thing does: it slows at the ends of
+    /// its travel and is fastest through the middle, and a linear one reads as a wobble of a broken picture.
+    /// The angle is zero at both ends of every half swing and at both ends of the whole bout, so the movement
+    /// starts and stops without a step - and it is a function of the clock rather than a state that is stepped,
+    /// which is what lets the probe check it without a screen. See probe/media.
+    /// </summary>
+    internal static float Swing(long ms)
+    {
+        long bout = (long)SwingSwings * 2 * SwingHalfMs;     // one to-and-fro is two halves
+        long cycle = bout + SwingRestMs;
+        long t = ms % cycle;
+        if (t < 0) t += cycle;
+        return t >= bout ? 0f : SwingDegrees * (float)Math.Sin(Math.PI * t / SwingHalfMs);
+    }
+
+    private const int SwingHalfMs = 260, SwingSwings = 3, SwingRestMs = 1000;
+    private const float SwingDegrees = 8f;
 
     /// <summary>
     /// The pill itself: two semicircles and the straight sides between them. The arcs are drawn from the 6 and
@@ -301,15 +362,31 @@ internal sealed class Capsule
     }
 
     /// <summary>
-    /// The speaker, in a box of its own size: the cone as one polygon, and then either two arcs opening away
-    /// from it or a cross over where they would be. Everything is a fraction of the box, so the same picture is
-    /// drawn at every DPI and at both states without a second copy of anything.
+    /// The glyph, in a box of its own size. Everything is a fraction of the box, so the same picture is drawn
+    /// at every DPI and at both states without a second copy of anything.
     /// </summary>
-    private static void Speaker(Graphics g, Glyph icon, Layout lay, Color ink)
+    private static void DrawGlyph(Graphics g, Glyph icon, Layout lay, Color ink, bool iconRight, float spin)
     {
         float s = lay.IconW;
         float x = lay.IconX;
         float y = (lay.Height - lay.IconW) / 2f;
+
+        if (icon == Glyph.Search)
+        {
+            // Turned about its own bottom-right corner, which is the corner the handle ends at: the glyph
+            // leans out of its box and back rather than rotating on the spot, which is what a magnifier being
+            // shaken looks like. The transform is the whole of it - the picture below is drawn upright.
+            var before = g.Save();
+            try
+            {
+                g.TranslateTransform(x + s, y + s);
+                g.RotateTransform(spin);
+                g.TranslateTransform(-(x + s), -(y + s));
+                Search(g, ink, x, y, s);
+            }
+            finally { g.Restore(before); }
+            return;
+        }
 
         using (var brush = new SolidBrush(ink))
         using (var cone = new GraphicsPath())
@@ -341,6 +418,34 @@ internal sealed class Capsule
         // curve away from the cone rather than around it.
         g.DrawArc(pen, x + 0.34f * s, y + 0.30f * s, 0.38f * s, 0.40f * s, -55, 110);
         g.DrawArc(pen, x + 0.34f * s, y + 0.12f * s, 0.66f * s, 0.76f * s, -55, 110);
+    }
+
+    /// <summary>
+    /// The magnifier: a ring and a handle on the diagonal, both as wide as each other.
+    ///
+    /// The numbers are the SVG's own, divided by its 960-unit box and with its y flipped, because it is drawn
+    /// from Material Symbols' search glyph rather than invented: the file is in the repository's icon folder and
+    /// is what this was read out of. A ring rather than a stroked circle - the source draws it as a filled path
+    /// with a hole in it - and the handle is on the box's diagonal, which is the corner the swing turns about.
+    /// </summary>
+    private static void Search(Graphics g, Color ink, float x, float y, float s)
+    {
+        const float Outer = 0.2708f, Inner = 0.1875f, Centre = 0.3958f, Thickness = 0.0825f;
+        float cx = x + Centre * s, cy = y + Centre * s;
+
+        using (var brush = new SolidBrush(ink))
+        using (var ring = new GraphicsPath(FillMode.Alternate))
+        {
+            ring.AddEllipse(cx - Outer * s, cy - Outer * s, 2 * Outer * s, 2 * Outer * s);
+            ring.AddEllipse(cx - Inner * s, cy - Inner * s, 2 * Inner * s, 2 * Inner * s);
+            g.FillPath(brush, ring);
+        }
+        using var pen = new Pen(ink, Math.Max(1f, Thickness * s))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
+        g.DrawLine(pen, x + 0.6125f * s, y + 0.5542f * s, x + 0.8458f * s, y + 0.7875f * s);
     }
 
     private static Color Fill(State s) => s switch
@@ -379,9 +484,9 @@ internal sealed class Capsule
 
     private readonly Style _style;
 
-    /// <summary>Where the capsule is anchored in screen coordinates, and which of its corners that is.</summary>
+    /// <summary>Where the capsule is anchored in screen coordinates, and which point of it that is.</summary>
     private int _anchorX, _anchorY;
-    private readonly bool _rightAligned;
+    private readonly Anchor _anchor;
 
     /// <summary>The trailing label, which never changes for the life of one capsule: "skip", or nothing.</summary>
     private readonly string? _action;
@@ -390,14 +495,16 @@ internal sealed class Capsule
     private Glyph _icon = Glyph.None;
     private State _state = State.Normal;
     private bool _shown;
+    private bool _iconRight;
+    private float _spin;
     private int _width;
 
     public IntPtr Hwnd { get; }
 
-    private Capsule(IntPtr hwnd, Style style, int x, int y, bool rightAligned, string? action)
+    private Capsule(IntPtr hwnd, Style style, int x, int y, Anchor anchor, string? action)
     {
         Hwnd = hwnd; _style = style;
-        _anchorX = x; _anchorY = y; _rightAligned = rightAligned; _action = action;
+        _anchorX = x; _anchorY = y; _anchor = anchor; _action = action;
     }
 
     /// <summary>
@@ -410,7 +517,7 @@ internal sealed class Capsule
     /// WS_EX_TRANSPARENT is what makes the click reach the card: the card decides what a click meant by where
     /// the cursor was, so a capsule that swallowed it would be a mute button that cannot be pressed.
     /// </summary>
-    public static Capsule? Make(IntPtr owner, Style style, int x, int y, bool rightAligned, string? action)
+    public static Capsule? Make(IntPtr owner, Style style, int x, int y, Anchor anchor, string? action)
     {
         if (!Register()) return null;
         IntPtr hwnd = Native.CreateWindowExW(
@@ -423,7 +530,7 @@ internal sealed class Capsule
             Say($"capsule: the window would not be made (err {System.Runtime.InteropServices.Marshal.GetLastWin32Error()})");
             return null;
         }
-        return new Capsule(hwnd, style, x, y, rightAligned, action);
+        return new Capsule(hwnd, style, x, y, anchor, action);
     }
 
     private static bool Register()
@@ -446,11 +553,25 @@ internal sealed class Capsule
     }
 
     /// <summary>What the capsule says, and the picture beside it. Nothing happens when neither has changed.</summary>
-    public void Set(string text, Glyph icon)
+    public void Set(string text, Glyph icon, bool iconRight = false)
     {
-        if (_text == text && _icon == icon) return;
+        if (_text == text && _icon == icon && _iconRight == iconRight) return;
         _text = text;
         _icon = icon;
+        _iconRight = iconRight;
+        Paint();
+    }
+
+    /// <summary>
+    /// How far the glyph is turned, in degrees. Painted only when it has moved far enough to be a different
+    /// picture, which is what keeps a swinging icon from repainting itself through the second it is standing
+    /// still - the swing is a continuous number, and without this the capsule would be redrawn sixty times a
+    /// second to draw the same pixels. See Swing.
+    /// </summary>
+    public void SetSpin(float degrees)
+    {
+        if (Math.Abs(degrees - _spin) < 0.4f) return;
+        _spin = degrees;
         Paint();
     }
 
@@ -479,9 +600,18 @@ internal sealed class Capsule
         _anchorX += dx;
         _anchorY += dy;
         if (Hwnd == IntPtr.Zero) return;
-        Native.SetWindowPos(Hwnd, IntPtr.Zero, _rightAligned ? _anchorX - _width : _anchorX, _anchorY, 0, 0,
+        Native.SetWindowPos(Hwnd, IntPtr.Zero, LeftOf(_width), _anchorY, 0, 0,
                             Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
     }
+
+    /// <summary>Where the capsule's left edge goes, given where it is anchored and how wide it came out.</summary>
+    private int LeftOf(int width)
+        => _anchor switch
+        {
+            Anchor.Right => _anchorX - width,
+            Anchor.Centre => _anchorX - width / 2,
+            _ => _anchorX,
+        };
 
     public void Dispose()
     {
@@ -498,8 +628,8 @@ internal sealed class Capsule
     private void Paint()
     {
         if (Hwnd == IntPtr.Zero) return;
-        using var bmp = Render(_style, _text, _action, _icon, _state, out var lay);
-        int x = _rightAligned ? _anchorX - lay.Width : _anchorX;
+        using var bmp = Render(_style, _text, _action, _icon, _state, out var lay, _iconRight, _spin);
+        int x = LeftOf(lay.Width);
         _width = lay.Width;
         Present(bmp, x, _anchorY);
         if (!_shown)
