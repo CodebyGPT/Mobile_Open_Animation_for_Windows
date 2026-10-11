@@ -454,6 +454,15 @@ internal static class Strings
         // rather than three strings joined in the card - a translator has a whole sentence to work with.
         ["AdsRemaining"] = ("{0}s left", "视频剩余：{0}s"),
         ["AdsSkip"]      = ("Skip", "跳过"),
+        // The bold words in front of the advertisement's own name, on the capsule that searches for it. Short on
+        // purpose: what follows is the file's name, which is the thing being shown.
+        ["AdsSearch"]    = ("Search", "搜一搜"),
+        // The name of the empty file the program leaves in the Ads folder it makes, so that the folder says
+        // what goes in it even when it is opened from somewhere that never saw this program's tray menu. A file
+        // name, so it has to survive being one: no extension, since nothing about it is a file type, and that
+        // is also what keeps it out of the videos - see Ads.IsVideo.
+        ["AdsNote"]      = ("Put your named video files in here",
+                            "请将命名好的视频文件存在在此处"),
         // A submenu rather than a toggle, and one entry in it so far: what belongs under it is any number
         // of separate diagnostics, each of which can be turned on without the others.
         ["DebugMode"]    = ("Debug mode", "调试模式"),

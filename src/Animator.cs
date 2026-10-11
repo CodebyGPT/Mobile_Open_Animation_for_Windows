@@ -2359,7 +2359,7 @@ internal sealed class Panel
         border = background;
         hasBorder = false;
 
-        if (AccentColor() is not Color accent) return;
+        if (Native.Accent() is not Color accent) return;
 
         bool onStartAndTaskbar = Dword(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
                                        "ColorPrevalence");
@@ -2388,29 +2388,8 @@ internal sealed class Panel
     }
 
     /// <summary>
-    /// The current accent colour. Windows stores it as 0xAABBGGRR under DWM, cross-checked
-    /// against ColorizationColor which holds the same colour as 0xAARRGGBB - the two agree
-    /// once each is read in its own byte order, which is how the order here was confirmed.
-    /// ColorizationColor is deliberately NOT a fallback: sharing one decoder with it would
-    /// read it backwards and hand back the complement of the real accent.
+    /// The current accent colour, which is read by Native.Accent: the card's border is not the only thing drawn
+    /// in it any more - the program's own icon is - so the decoder lives beside the other system queries.
     /// </summary>
-    private static Color? AccentColor()
-    {
-        var sources = new (string path, string name)[]
-        {
-            (@"Software\Microsoft\Windows\DWM", "AccentColor"),
-            (@"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent", "AccentColorMenu"),
-        };
-        foreach (var (path, name) in sources)
-        {
-            try
-            {
-                using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(path);
-                if (k?.GetValue(name) is int v)
-                    return Color.FromArgb(255, v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF);
-            }
-            catch { /* no accent stored; the caller falls back */ }
-        }
-        return null;
-    }
+    private static Color? AccentColor() => Native.Accent();
 }

@@ -102,19 +102,40 @@ internal static class Ads
     public const int CapSeconds = 360;
 
     /// <summary>
-    /// Makes the folder the videos go in. True when it was created, false when it was already there.
+    /// Makes the folder the videos go in, with an empty file named <paramref name="note" /> in it saying what
+    /// goes there. True when it was created, false when it was already there.
     ///
     /// Compared by name rather than asked with Directory.Exists: on an ordinary volume the two spellings are
     /// one directory and both answers are right, but a volume with case-sensitive names allowed on it can hold
     /// an "ads" and an "Ads" side by side, and making a second folder beside the one the user is already
     /// filling would be the wrong answer. Nothing below the top level is looked at - subfolders are ignored
     /// here and everywhere else this feature reads, so a folder of re-encoded copies is not a folder of ads.
+    ///
+    /// <paramref name="how" /> is what happened, in words, for whoever keeps a log: "created", "already there",
+    /// or the exception that stopped it. Passed out rather than logged here because there is no logging in this
+    /// file at all - what is in it is the feature's rules, which is what makes them checkable without a screen -
+    /// and the name of the note is passed the same way because the two texts belong to the same layer: the one
+    /// the user is shown is the one that is a language.
+    ///
+    /// Failing quietly is the point. The folder is a convenience - a note of where the videos go, written while
+    /// the feature is being switched on - and a directory that cannot be made is not something to interrupt the
+    /// user over. <paramref name="how" /> goes to the log, which writes nothing unless Debug mode is on.
     /// </summary>
-    public static bool EnsureFolder()
+    public static bool EnsureFolder(string note, out string how)
     {
-        if (FindFolder() != null) return false;
-        Directory.CreateDirectory(Folder);
-        return true;
+        if (FindFolder() != null) { how = "already there"; return false; }
+        try
+        {
+            Directory.CreateDirectory(Folder);
+            File.WriteAllBytes(Path.Combine(Folder, note), Array.Empty<byte>());
+            how = "created";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            how = $"could not be made ({ex.GetType().Name}: {ex.Message})";
+            return false;
+        }
     }
 
     private static string? FindFolder()

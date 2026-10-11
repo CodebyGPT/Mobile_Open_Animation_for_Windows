@@ -1,4 +1,5 @@
 // All Win32 interop in one place. Only what the program actually uses.
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -242,6 +243,9 @@ internal static class Native
     /// on a hand's tremor is a drag nobody asked for.
     /// </summary>
     public const int SM_CXDRAG = 68, SM_CYDRAG = 69;
+
+    /// <summary>SM_CXSMICON: the size a small icon is on this display, which is the tray's own size.</summary>
+    public const int SM_CXSMICON = 49;
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, uint attr, out RECT value, int size);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr LoadIconW(IntPtr inst, IntPtr name);
@@ -308,6 +312,24 @@ internal static class Native
     [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, bool redraw);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFO bmi,
         uint usage, out IntPtr bits, IntPtr section, uint offset);
+    /// <summary>
+    /// A 1bpp bitmap with the caller's bits in it, which is what an icon's mask is. The array rather than a
+    /// pointer because CreateBitmap with no bits at all leaves the contents undefined rather than blank, and an
+    /// undefined mask is an icon that is transparent wherever the garbage bit happened to be. See AppIcon.
+    /// </summary>
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern IntPtr CreateBitmap(int width, int height, uint planes, uint bits, byte[]? data);
+    /// <summary>An icon from a colour bitmap and a mask; owned by the caller and freed with DestroyIcon.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr CreateIconIndirect(ref ICONINFO info);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ICONINFO
+    {
+        public bool FIcon;
+        public int XHotspot, YHotspot;
+        public IntPtr HbmMask, HbmColor;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct BITMAPINFOHEADER
@@ -583,8 +605,16 @@ internal static class Native
     /// TD_INFORMATION_ICON, and it is 0xFFFD rather than -3 on purpose: MAKEINTRESOURCEW truncates to a WORD
     /// and zero-extends, so the sign is gone by the time the system sees it. Passing (IntPtr)(-3) would be a
     /// pointer into the top of the address space and the dialog would come up with no icon.
+    ///
+    /// It is one of the values the union can hold beside a real HICON, and which of the two it is has to be said:
+    /// with TDF_USE_HICON_MAIN the very same field is read as a handle, and a 0xFFFD read as one is a handle to
+    /// nothing. The About box sets that flag when it has the program's own icon and leaves it off when it does
+    /// not, so this value is what it falls back to rather than what it assumes.
     /// </summary>
     public static readonly IntPtr TD_INFORMATION_ICON = (IntPtr)0xFFFD;
+
+    /// <summary>TDF_USE_HICON_MAIN: the main icon field is a handle this caller owns, not a resource value.</summary>
+    public const uint TDF_USE_HICON_MAIN = 0x0002;
 
     public delegate int TaskDialogCallback(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam,
                                            IntPtr refData);
@@ -1037,6 +1067,37 @@ internal static class Native
     {
         public IntPtr HProcess, HThread;
         public int Pid, Tid;
+    }
+
+    /// <summary>
+    /// The accent colour Windows is using - "主题色" in the Settings page - or null when one has never been
+    /// chosen. Windows stores it as 0xAABBGGRR under DWM, cross-checked against ColorizationColor which holds
+    /// the same colour as 0xAARRGGBB: the two agree once each is read in its own byte order, which is how the
+    /// order here was confirmed. ColorizationColor is deliberately NOT a fallback - sharing one decoder with it
+    /// would read it backwards and hand back the complement of the real accent.
+    ///
+    /// It lives here rather than in the animator that first needed it, because two things draw in it: the card's
+    /// border and the program's own icon. One reader, so that the icon and an animation cannot disagree about
+    /// what the user's colour is.
+    /// </summary>
+    public static Color? Accent()
+    {
+        var sources = new (string path, string name)[]
+        {
+            (@"Software\Microsoft\Windows\DWM", "AccentColor"),
+            (@"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent", "AccentColorMenu"),
+        };
+        foreach (var (path, name) in sources)
+        {
+            try
+            {
+                using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(path);
+                if (k?.GetValue(name) is int v)
+                    return Color.FromArgb(255, v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF);
+            }
+            catch { /* no accent stored; the caller falls back */ }
+        }
+        return null;
     }
 
     /// <summary>

@@ -246,6 +246,11 @@ internal static class Program
         // The logon advertisement, if it is due. It runs on this thread like everything else - the card's
         // timer arrives in the message loop below - so it goes up before the loop starts and its countdown is
         // served by it.
+        //
+        // The folder the videos go in is made just before, so that a folder that has been deleted under a
+        // program that is already switched on is put back on the next run rather than waiting for one of the
+        // two switches to be clicked again.
+        NoteFolder();
         ShowBootAdIfDue();
 
         _host.RunMessageLoop();
@@ -393,6 +398,7 @@ internal static class Program
         AdsCard.CaptionUnmute = Strings.T("AdsUnmute");
         AdsCard.CaptionRemaining = Strings.T("AdsRemaining");
         AdsCard.CaptionSkip = Strings.T("AdsSkip");
+        AdsCard.CaptionSearch = Strings.T("AdsSearch");
         AdsCard.MuteRemembered = m => { _s.AdsMuted = m; _s.Save(); };
         // The advertisement's own name, clicked: the card builds the URL and this is the only thing that
         // launches anything. It goes to the shell as a URL to open, which is what hands it to whichever browser
@@ -467,14 +473,21 @@ internal static class Program
     }
 
     /// <summary>
-    /// Makes the folder the videos go in, so that switching one of the two kinds on leaves a note of where the
-    /// videos go rather than an advertisement with nothing to play. Nothing is said when neither is on.
+    /// Makes the folder the videos go in, with the note in it that says what goes there, so that the feature
+    /// being asked for at all leaves a note of where the videos go rather than an advertisement with nothing to
+    /// play. Nothing is said when the feature has not been asked for.
+    ///
+    /// Asking for it includes merely being able to see the submenu, not only switching one of the two kinds on:
+    /// the submenu is the feature as far as the user is concerned, and a user who has just revealed it - see
+    /// the About box - is the one who most needs to be told where the videos go. Neither switch is needed for
+    /// the note, and an empty folder is not something either of them can play, so nothing here changes what may
+    /// be clicked: see Ads.Available.
     /// </summary>
     private static void NoteFolder()
     {
-        if (!_s.WindowAd && !_s.BootAd) return;
-        bool made = Ads.EnsureFolder();
-        Log.Write($"ads: {Ads.Folder} {(made ? "created" : "already there")}");
+        if (!_s.AdsVisible && !_s.WindowAd && !_s.BootAd) return;
+        Ads.EnsureFolder(Strings.T("AdsNote"), out string how);
+        Log.Write($"ads: {Ads.Folder} {how}");
     }
 
     /// <summary>
@@ -537,6 +550,8 @@ internal static class Program
             // Done when a kind is switched *on* rather than when the feature is first asked for, because there
             // is no switch for the feature itself any more: the two entries are switches of their own, and the
             // moment to make the folder is the moment one of them is switched on with nothing there to play.
+            // Seeing the submenu at all counts as asking for it now, so this is a second chance rather than the
+            // only one - see NoteFolder, which is also what runs at startup.
             case MenuAdsWindow:
                 _s.WindowAd = !_s.WindowAd;
                 NoteFolder();
@@ -637,6 +652,7 @@ internal static class Program
                     Log.Write("about: the launch-ad code was entered; revealing the menu entry");
                     _s.AdsVisible = true;
                     _s.Save();
+                    NoteFolder();
                     _host.ShowMenu();
                 }
                 break;
@@ -721,11 +737,22 @@ internal sealed class TrayHost
         // does again after it crashes, is restarted by an update, or is restarted by hand.
         _taskbarCreated = Native.RegisterWindowMessageW("TaskbarCreated");
 
-        // Use the exe's own icon; fall back to the system application icon.
-        Native.ExtractIconExW(Compat.ExePath, 0, out _iconLarge, out _iconSmall, 1);
-        _trayIcon = _iconSmall != IntPtr.Zero ? _iconSmall : Native.LoadIconW(IntPtr.Zero, (IntPtr)32512);
+        // The program's own icon, drawn for the theme the tray is on: an accent-coloured outline and a fill of
+        // white or black, so the same file looks like itself on a light taskbar and on a dark one. Drawn rather
+        // than extracted because it has to be drawn *again* when either colour changes - see AppIcon, and the
+        // ImmersiveColorSet case below, which is where that happens.
+        //
+        // The exe's own icon is the fallback rather than the source: it is the same shape in the SVG's own colours
+        // (white square, black outline), which is right for a file in Explorer and wrong for a taskbar.
+        _trayIcon = DrawTrayIcon();
+        if (_trayIcon == IntPtr.Zero)
+        {
+            Native.ExtractIconExW(Compat.ExePath, 0, out _iconLarge, out _iconSmall, 1);
+            _trayIcon = _iconSmall != IntPtr.Zero ? _iconSmall : IntPtr.Zero;
+        }
 
         Moa.Log.Write($"tray: TaskbarCreated=0x{_taskbarCreated:X8} icon={_trayIcon}" +
+                      $" (system light={AppIcon.SystemIsLight()}, accent={AppIcon.Stroke()})" +
                       (_taskbarCreated == 0 ? " (registration failed; the icon cannot be restored)" : ""));
         WantTray();
         // The safety watchdog. Measured against what it protects: a window hidden by us must never be
@@ -734,6 +761,38 @@ internal sealed class TrayHost
         // which while an animation is running happens at frame rate anyway, so a second is only the
         // worst case for a line written while nothing is happening.
         Native.SetTimer(_hwnd, (IntPtr)1, 1000, IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// The tray icon, drawn at the size the tray wants and in the colours the tray is using. Zero when it could
+    /// not be made, which the caller falls back from.
+    ///
+    /// <c>SM_CXSMICON</c> is the size a small icon is on this display, which is the tray's own size - 16 pixels at
+    /// 100 per cent and 20 or 24 at the scalings that ask for them - and drawing at that size rather than handing
+    /// the shell something bigger to shrink is the whole of why the icon is drawn at all: a 16-pixel curve is
+    /// either drawn at 16 pixels or it is a resampled blur.
+    /// </summary>
+    private static IntPtr DrawTrayIcon() => AppIcon.Handle(
+        Math.Max(16, Native.GetSystemMetrics(Native.SM_CXSMICON)), AppIcon.Fill(), AppIcon.Stroke());
+
+    /// <summary>
+    /// Draws the icon again and hands the new one to the tray, if there is one in it. Called when the colours the
+    /// icon is made of have changed under a running program - the light/dark switch or a new accent colour - and
+    /// it is the one thing in this program that is *not* asked for at the moment it is needed, because the shell
+    /// holds a copy of the handle. Everything else here is asked for per use; this has to be pushed.
+    /// </summary>
+    private void RedrawTrayIcon()
+    {
+        IntPtr icon = DrawTrayIcon();
+        if (icon == IntPtr.Zero) return;
+        if (_trayIcon != IntPtr.Zero && _trayIcon != _iconSmall) Native.DestroyIcon(_trayIcon);
+        _trayIcon = icon;
+        if (!_trayAdded) return;
+        var nid = NewNid();
+        nid.UFlags = Native.NIF_ICON;
+        nid.HIcon = icon;
+        Native.Shell_NotifyIconW(Native.NIM_MODIFY, ref nid);
+        Moa.Log.Write($"tray: the icon was drawn again ({icon}, system light={AppIcon.SystemIsLight()})");
     }
 
     private void AddTray(IntPtr icon)
@@ -802,6 +861,10 @@ internal sealed class TrayHost
             Native.Shell_NotifyIconW(Native.NIM_DELETE, ref nid);
             _trayAdded = false;
         }
+        // Only the icons this program made: the one the tray is holding is either drawn here or taken out of the
+        // exe, and both of those are ours. See Create, which never hands the tray a shared system icon.
+        if (_trayIcon != IntPtr.Zero && _trayIcon != _iconSmall) Native.DestroyIcon(_trayIcon);
+        _trayIcon = IntPtr.Zero;
         if (_iconLarge != IntPtr.Zero) Native.DestroyIcon(_iconLarge);
         if (_iconSmall != IntPtr.Zero) Native.DestroyIcon(_iconSmall);
         if (_hwnd != IntPtr.Zero) { Native.DestroyWindow(_hwnd); _hwnd = IntPtr.Zero; }
@@ -867,6 +930,13 @@ internal sealed class TrayHost
                     // again, which is what recolours the menu, and the panel - if it is open - styles itself
                     // from the same answer when it hears this message.
                     if (area == "ImmersiveColorSet") Native.DarkMode.Apply();
+                    // And the icon is drawn again. Two of the things it is made of arrive as this message: the
+                    // light/dark setting and the accent colour come as ImmersiveColorSet, and a change of display
+                    // scaling comes as WindowMetrics. The scaling matters because the icon is drawn at the size
+                    // the tray asks for (SM_CXSMICON), which is a fact about the primary display - so without this
+                    // the icon would keep the pixel size it was drawn at and the shell would scale it, which is a
+                    // soft icon rather than a wrong one. See DrawTrayIcon.
+                    if (area is "ImmersiveColorSet" or "WindowMetrics") RedrawTrayIcon();
                     break;
                 }
 

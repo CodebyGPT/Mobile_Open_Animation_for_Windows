@@ -59,6 +59,14 @@ internal sealed class AdsCard
     public static string CaptionRemaining = "{0}s left", CaptionSkip = "Skip";
 
     /// <summary>
+    /// What the search capsule says in front of the file's own name, in bold: "搜一搜". It is the words of the
+    /// control - what pressing it does - and the name after it is what it is about; the shortest word that says it
+    /// rather than a sentence, because the name it introduces is the thing being shown. Set from Strings by the
+    /// program like the rest.
+    /// </summary>
+    public static string CaptionSearch = "Search";
+
+    /// <summary>
     /// Where a mute the user asked for is written down. Set whenever the caller means to remember it, which for
     /// the program is always: a mute control that forgets between showings is a mute control the user has to
     /// use again every time.
@@ -749,7 +757,7 @@ internal sealed class AdsCard
         // the end of it. See SetName and Shorten.
         _labelCeiling = w * NameWidestPercent / 100;
         SetName();
-        int nameW = Capsule.Measure(_nameStyle, _label, null, Capsule.Glyph.Search, iconRight: true).Width;
+        int nameW = Capsule.Measure(_nameStyle, _label, null, Capsule.Glyph.Search, iconRight: true, lead: CaptionSearch).Width;
         int nameY = _full.Top + h - h * NameFromBottomPercent / 100 - _nameStyle.Height / 2;
         _name = Capsule.Make(_hwnd, _nameStyle, _full.Left + w / 2, nameY, Capsule.Anchor.Centre, action: null);
         SetName();          // now that there is a capsule to say it to
@@ -793,7 +801,7 @@ internal sealed class AdsCard
         _label = _file;
         if (_nameStyle != null && _labelCeiling > 0)
             _label = Shorten(_nameStyle, _file, _labelCeiling);
-        _name?.Set(_label, Capsule.Glyph.Search, iconRight: true);
+        _name?.Set(_label, Capsule.Glyph.Search, iconRight: true, lead: CaptionSearch);
     }
 
     /// <summary>
@@ -828,7 +836,7 @@ internal sealed class AdsCard
 
     /// <summary>Whether a name, as it would be drawn, is inside the ceiling.</summary>
     private static bool Fits(Capsule.Style style, string name, int ceiling)
-        => Capsule.Measure(style, name, null, Capsule.Glyph.Search, iconRight: true).Width <= ceiling;
+        => Capsule.Measure(style, name, null, Capsule.Glyph.Search, iconRight: true, lead: CaptionSearch).Width <= ceiling;
 
     /// <summary>
     /// What the two controls are showing, given where the cursor is and whether a press is being held.

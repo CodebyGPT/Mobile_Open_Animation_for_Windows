@@ -88,6 +88,14 @@ internal sealed class Capsule
         public readonly Font Font;
 
         /// <summary>
+        /// The same face at the same size in bold, for the one run of text in a capsule that is a heading rather
+        /// than a label: the search capsule's "搜一搜". Same size on purpose - what tells it apart from the file's
+        /// name beside it is the weight, not the height, and a bigger heading in a control this small would only
+        /// make the name that follows it look like a footnote.
+        /// </summary>
+        public readonly Font FontBold;
+
+        /// <summary>
         /// Everything about a capsule's size, from the one number the caller has already decided about: how tall
         /// it is. There is no DPI here and that is deliberate - the height comes from the card the capsule sits
         /// on, so the same window looks the same on any display, and a control cannot come out too big for a
@@ -110,9 +118,14 @@ internal sealed class Capsule
             Icon = Math.Max(8, (int)Math.Round(Height * 0.52));
             FontPx = Math.Max(8, (int)Math.Round(Height * 0.46));
             Font = new Font(Face, FontPx, FontStyle.Regular, GraphicsUnit.Pixel);
+            FontBold = new Font(Face, FontPx, FontStyle.Bold, GraphicsUnit.Pixel);
         }
 
-        public void Dispose() => Font.Dispose();
+        public void Dispose()
+        {
+            Font.Dispose();
+            FontBold.Dispose();
+        }
     }
 
     /// <summary>
@@ -150,6 +163,7 @@ internal sealed class Capsule
     {
         public readonly int Width, Height, Radius;
         public readonly int IconX, IconW;
+        public readonly int LeadX, LeadW;
         public readonly int TextX, TextW;
         public readonly int SepX, SepW;
         public readonly int ActionX, ActionW;
@@ -160,12 +174,14 @@ internal sealed class Capsule
         /// </summary>
         public readonly int OuterLeftX, OuterLeftW, OuterRightX, OuterRightW;
 
-        public Layout(int width, int height, int radius, int iconX, int iconW, int textX, int textW,
-                      int sepX, int sepW, int actionX, int actionW,
+        public Layout(int width, int height, int radius, int iconX, int iconW, int leadX, int leadW,
+                      int textX, int textW, int sepX, int sepW, int actionX, int actionW,
                       int outerLeftX, int outerLeftW, int outerRightX, int outerRightW)
         {
             Width = width; Height = height; Radius = radius;
-            IconX = iconX; IconW = iconW; TextX = textX; TextW = textW;
+            IconX = iconX; IconW = iconW;
+            LeadX = leadX; LeadW = leadW;
+            TextX = textX; TextW = textW;
             SepX = sepX; SepW = sepW; ActionX = actionX; ActionW = actionW;
             OuterLeftX = outerLeftX; OuterLeftW = outerLeftW;
             OuterRightX = outerRightX; OuterRightW = outerRightW;
@@ -186,20 +202,31 @@ internal sealed class Capsule
     /// character is the size of the cap, which is what makes the rule mean something. A glyph wider than the
     /// capsule is drawn from the edge rather than outside it, which is the one case where the rule is broken to
     /// keep the label inside its own button.
+    ///
+    /// <paramref name="lead" /> is a few words in front of the label, drawn in the bold face of the same size: the
+    /// search capsule's "搜一搜", which says what pressing it does before the file's own name says what it is
+    /// about. It is a run of its own rather than part of the label because it is measured in a different font -
+    /// bold advances are wider - and because it must not be shortened with the label: what is cut when the card is
+    /// narrow is the file's name, never the words that explain the control.
     /// </summary>
-    internal static Layout Measure(Style st, string text, string? action, Glyph icon, bool iconRight = false)
+    internal static Layout Measure(Style st, string text, string? action, Glyph icon, bool iconRight = false,
+                                   string? lead = null)
     {
         using var g = Graphics.FromHwnd(IntPtr.Zero);
         var fmt = StringFormat.GenericTypographic;
 
         int iconW = icon == Glyph.None ? 0 : st.Icon;
+        int leadW = lead == null ? 0 : Width(g, st.FontBold, fmt, lead);
         int textW = Width(g, st.Font, fmt, text);
         int sepW = action == null ? 0 : Width(g, st.Font, fmt, Separator);
         int actW = action == null ? 0 : Width(g, st.Font, fmt, action);
 
         // The glyph is the outermost thing on the side it is on, so it is the glyph's width the padding is
-        // measured from there, and a character of the label's otherwise. See the rule above.
-        int leftW = iconW > 0 && !iconRight ? iconW : Atom(g, st.Font, fmt, text, first: true);
+        // measured from there, and a character of the label's otherwise - the lead's first character when there is
+        // one, since that is what is nearest the left edge. See the rule above.
+        int leftW = iconW > 0 && !iconRight ? iconW
+                  : lead != null ? Atom(g, st.FontBold, fmt, lead, first: true)
+                  : Atom(g, st.Font, fmt, text, first: true);
         int rightW = iconW > 0 && iconRight ? iconW
                    : action != null ? Atom(g, st.Font, fmt, action, first: false)
                    : Atom(g, st.Font, fmt, text, first: false);
@@ -208,6 +235,8 @@ internal sealed class Capsule
 
         int x = padL, iconX = x;
         if (iconW > 0 && !iconRight) x += iconW + st.Gap;
+        int leadX = x;
+        if (lead != null) x += leadW + Space(st);
         int textX = x;
         x += textW;
         int sepX = 0, actionX = 0;
@@ -226,13 +255,24 @@ internal sealed class Capsule
 
         // The right-hand one is worked out from the right edge of the thing it belongs to, because that is the
         // edge the padding was measured from.
-        int outerLeftX = iconW > 0 && !iconRight ? iconX : textX;
+        int outerLeftX = iconW > 0 && !iconRight ? iconX
+                       : lead != null ? leadX
+                       : textX;
         int outerRightX = iconW > 0 && iconRight ? iconX + iconW - rightW
                         : action != null ? actionX + actW - rightW
                         : textX + textW - rightW;
-        return new Layout(width, st.Height, st.Radius, iconX, iconW, textX, textW, sepX, sepW,
+        return new Layout(width, st.Height, st.Radius, iconX, iconW, leadX, leadW, textX, textW, sepX, sepW,
                           actionX, actW, outerLeftX, leftW, outerRightX, rightW);
     }
+
+    /// <summary>
+    /// The space between the lead and the label, as a fraction of the font size.
+    ///
+    /// A fraction of the size rather than the width of a space character, and that is not laziness: GDI+ leaves
+    /// trailing spaces out of a measurement unless it is asked not to, so measuring "搜一搜 " and drawing
+    /// "搜一搜" would leave the label where the space is not. See Width, which is the measurement in question.
+    /// </summary>
+    private static int Space(Style st) => Math.Max(2, (int)Math.Round(st.FontPx * 0.28));
 
     /// <summary>How wide a whole string is, rounded up so that nothing is lost to the ceiling.</summary>
     private static int Width(Graphics g, Font font, StringFormat fmt, string s)
@@ -267,9 +307,9 @@ internal sealed class Capsule
     /// be confused with each other or with the picture.
     /// </summary>
     internal static Bitmap Render(Style st, string text, string? action, Glyph icon, State state,
-                                  out Layout layout, bool iconRight = false, float spin = 0f)
+                                  out Layout layout, bool iconRight = false, float spin = 0f, string? lead = null)
     {
-        layout = Measure(st, text, action, icon, iconRight);
+        layout = Measure(st, text, action, icon, iconRight, lead);
         var bmp = new Bitmap(layout.Width, layout.Height, PixelFormat.Format32bppPArgb);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -298,6 +338,11 @@ internal sealed class Capsule
             centred.Alignment = StringAlignment.Near;
             centred.LineAlignment = StringAlignment.Center;
             centred.FormatFlags |= StringFormatFlags.NoWrap;
+            // The lead first, in the bold face and the same ink: it is part of what the button says, not a lesser
+            // label, and the weight is what tells it apart from the file's name beside it.
+            if (lead != null)
+                g.DrawString(lead, st.FontBold, brush,
+                             new RectangleF(layout.LeadX, 0, layout.LeadW + 2, layout.Height), centred);
             var band = new RectangleF(layout.TextX, 0, layout.TextW + 2, layout.Height);
             g.DrawString(text, st.Font, brush, band, centred);
 
@@ -499,6 +544,9 @@ internal sealed class Capsule
     private float _spin;
     private int _width;
 
+    /// <summary>The bold run in front of the label, or null: the search capsule's "搜一搜". See Measure.</summary>
+    private string? _lead;
+
     public IntPtr Hwnd { get; }
 
     private Capsule(IntPtr hwnd, Style style, int x, int y, Anchor anchor, string? action)
@@ -552,13 +600,17 @@ internal sealed class Capsule
         return _registered;
     }
 
-    /// <summary>What the capsule says, and the picture beside it. Nothing happens when neither has changed.</summary>
-    public void Set(string text, Glyph icon, bool iconRight = false)
+    /// <summary>
+    /// What the capsule says, the bold run in front of it and the picture beside it. Nothing happens when none of
+    /// them has changed.
+    /// </summary>
+    public void Set(string text, Glyph icon, bool iconRight = false, string? lead = null)
     {
-        if (_text == text && _icon == icon && _iconRight == iconRight) return;
+        if (_text == text && _icon == icon && _iconRight == iconRight && _lead == lead) return;
         _text = text;
         _icon = icon;
         _iconRight = iconRight;
+        _lead = lead;
         Paint();
     }
 
@@ -628,7 +680,7 @@ internal sealed class Capsule
     private void Paint()
     {
         if (Hwnd == IntPtr.Zero) return;
-        using var bmp = Render(_style, _text, _action, _icon, _state, out var lay, _iconRight, _spin);
+        using var bmp = Render(_style, _text, _action, _icon, _state, out var lay, _iconRight, _spin, _lead);
         int x = LeftOf(lay.Width);
         _width = lay.Width;
         Present(bmp, x, _anchorY);

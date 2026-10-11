@@ -28,6 +28,11 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>MobileOpenAnimation</AssemblyName>
     <RootNamespace>Moa</RootNamespace>
+    <!-- The icon Explorer shows for the exe, generated from the drawing in AppIcon.cs by probe/icon, so that the
+         shape is described once. It is the SVG's own colours rather than the theme's, because a file in a folder
+         has no window to be themed against - the icon the *tray* shows is drawn at run time, in the accent colour
+         and the current light or dark. See AppIcon. -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <DebugType>none</DebugType>
     <!-- One build, and it carries every diagnostic. There is no logging symbol to define any more: what

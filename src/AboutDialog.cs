@@ -113,6 +113,14 @@ internal static class AboutDialog
             Log.Write($"about: keyboard hook {(_hook != IntPtr.Zero ? "installed" : "FAILED")}");
         }
 
+        // The program's own icon as the box's icon, in place of the blue information one. The dialog draws
+        // whatever it is handed here exactly as it draws its own - see TDF_USE_HICON_MAIN - so this box still
+        // draws nothing itself: the handle is the exe's own icon resource, taken out and given back.
+        //
+        // The flag is set only when there is a handle, because the field means two different things depending on
+        // it: without it, 0xFFFD is the information icon, and with it the same value is a handle to nothing.
+        IntPtr icon = AppIcon.FromExe();
+
         var config = new Native.TASKDIALOGCONFIG
         {
             CbSize = (uint)Marshal.SizeOf<Native.TASKDIALOGCONFIG>(),
@@ -120,9 +128,10 @@ internal static class AboutDialog
             // The link flag is what turns <a href> in the content into something clickable; the dialog does not
             // follow links itself, it tells the callback which one was followed. Cancellation is what keeps the
             // box closable with no button in it - without it a dialog with no buttons could not be dismissed.
-            DwFlags = Native.TDF_ENABLE_HYPERLINKS | Native.TDF_ALLOW_DIALOG_CANCELLATION,
+            DwFlags = Native.TDF_ENABLE_HYPERLINKS | Native.TDF_ALLOW_DIALOG_CANCELLATION |
+                      (icon != IntPtr.Zero ? Native.TDF_USE_HICON_MAIN : 0),
             PszWindowTitle = _title,
-            MainIcon = Native.TD_INFORMATION_ICON,
+            MainIcon = icon != IntPtr.Zero ? icon : Native.TD_INFORMATION_ICON,
             PszMainInstruction = _instruction,
             PszContent = _content,
             PfCallback = _callback,
@@ -140,6 +149,8 @@ internal static class AboutDialog
             _hook = IntPtr.Zero;
             _due = 0;
             _dlg = IntPtr.Zero;
+            // After the dialog has returned and not before: it is the dialog that is drawing it. See AppIcon.
+            if (icon != IntPtr.Zero) Native.DestroyIcon(icon);
         }
         // Written either way. A dialog that never appeared and one that was closed both come out of this call
         // as nothing happening, and only the second is what the user meant.

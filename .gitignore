@@ -15,5 +15,13 @@ probe/chromeprofile*/
 
 # the upstream snapshot downloaded for comparison: it belongs to that project, not this one
 new/
-# working notes and artwork kept beside the source rather than in it
-icon/
+# working notes and artwork kept beside the source rather than in it - the folder at the top of this checkout,
+# not every folder called icon: the rule without the leading slash also swallowed probe/icon, which is a probe
+# rather than artwork and belongs in the repository.
+#
+# The contents are excluded rather than the folder, so that the one file in there that the program does ship can
+# be named back in: a rule on the folder itself stops git from looking inside it at all, and no later rule can
+# bring anything in it back.
+/icon/*
+# the file the program's icon is drawn from, and the one piece of that folder that belongs to this program
+!/icon/曲线调整_curve-adjustment.svg
