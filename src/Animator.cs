@@ -71,6 +71,13 @@ internal sealed class Animator
 
         /// <summary>When the hide was last re-asserted; see the note where it is used.</summary>
         public long LastReassert;
+
+        /// <summary>
+        /// How many of the two "what is covering what" lines a closing animation has written. Two, at the start
+        /// and past the middle of the shrink, because the answer can differ between them and one line cannot say
+        /// that it did: see the note where it is written.
+        /// </summary>
+        public int CoverFrames;
     }
 
     /// <summary>
@@ -386,16 +393,22 @@ internal sealed class Animator
         return w == IntPtr.Zero ? "none (end of Z-order)" : "none within 40";
     }
 
-    /// <summary>Class, size and visibility of a window, for the log lines above. Not itself
+    /// <summary>Class, place, size and visibility of a window, for the log lines above. Not itself
     /// conditional - it returns a value, which a Conditional method may not - and it is only ever
-    /// called from a Conditional one, so it costs nothing in a Release build.</summary>
+    /// called from a Conditional one, so it costs nothing in a Release build.
+    ///
+    /// The alpha is part of it because "visible" is not the same question as "can be seen": a window
+    /// this program hid for an animation is visible to Windows and invisible to the eye, and the two
+    /// answers are one word apart in what they mean.</summary>
     private static string Describe(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return "none";
         var cls = new StringBuilder(128);
         Native.GetClassNameW(hwnd, cls, 128);
         Native.GetWindowRect(hwnd, out var r);
-        return $"{cls} {r.Right - r.Left}x{r.Bottom - r.Top} visible={Native.IsWindowVisible(hwnd)}";
+        return $"{cls} {r.Right - r.Left}x{r.Bottom - r.Top} at {r.Left},{r.Top}" +
+               $" visible={Native.IsWindowVisible(hwnd)} alpha={AlphaOf(hwnd)}" +
+               $" topmost={(Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE) & Native.WS_EX_TOPMOST) != 0}";
     }
 
     /// <summary>
@@ -657,6 +670,30 @@ internal sealed class Animator
         var sb = new StringBuilder(64);
         Native.GetClassNameW(h, sb, 64);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Where one window is relative to another in the desktop's own Z-order, and what is between them.
+    ///
+    /// Walked from the top of the list rather than asked of either window, because that is the order the eye
+    /// sees: the window drawn over the other is the one that comes first. The class names are there so that a
+    /// card that is covered says what is covering it, which is the one thing the panel's own state cannot say.
+    /// </summary>
+    private static string ZOrder(IntPtr a, IntPtr b)
+    {
+        var over = new List<string>();
+        IntPtr h = Native.GetTopWindow(IntPtr.Zero);
+        for (int i = 0; i < 500 && h != IntPtr.Zero; i++)
+        {
+            if (h == a) return "above the window" + Over(over);
+            if (h == b) return "below the window" + Over(over);
+            if (over.Count < 4) over.Add(ClassNameOf(h));
+            h = Native.GetWindow(h, Native.GW_HWNDNEXT);
+        }
+        return "in a list that holds neither";
+
+        static string Over(List<string> seen) =>
+            seen.Count == 0 ? " (immediately)" : $" (over {string.Join(", ", seen)})";
     }
 
     /// <summary>
@@ -1116,6 +1153,16 @@ internal sealed class Animator
                     ? 255
                     : (int)Math.Round(255 * (1 - (t - FadeFrom) / (1 - FadeFrom)));
                 _thread.RequestFrame(a.Panel, cx, cy, cw, ch, ca, crad);
+                // What is on screen while this card is shrinking, written twice per close rather than reasoned
+                // about: a card that is under the window it is covering is the report this exists for. Two
+                // lines because the answer is allowed to differ between them - the window is on its way out,
+                // and the first frames are the ones it is still there for - and one line cannot say that it
+                // changed. See LogCover for what it asks and why it is asked of the window manager.
+                if (Log.On && (a.CoverFrames == 0 || (a.CoverFrames == 1 && t > 0.4)))
+                {
+                    a.CoverFrames++;
+                    LogCover(a, t);
+                }
                 if (t >= 1.0) Finish(i, a, restore: false);
                 continue;
             }
@@ -1229,8 +1276,32 @@ internal sealed class Animator
         }
     }
 
-    private void Finish(int index, Anim a, bool restore)
+    /// <summary>
+    /// Writes what a closing card has under it, and what has the card under it.
+    ///
+    /// Three questions, and all three are needed to tell the possible reasons apart. Is the window still there
+    /// at all - "gone" and "visible" are a whole answer and "on its way out" is the awkward one. Is the panel in
+    /// the topmost band - a panel that is not is one anything can be put over. And where are the two of them in
+    /// the Z-order, which is the only one of the three that answers the question the user answers by looking:
+    /// the walk is from the top of the desktop's list, so the window that comes first is the one drawn over the
+    /// other, and the classes it passed on the way name whatever is covering the card when it is not the window.
+    /// </summary>
+    private void LogCover(Anim a, double t)
     {
+        bool alive = Native.IsWindow(a.Target.Hwnd);
+        Log.Write($"closing cover (t={t:F2}): the panel is {Describe(a.Panel.Hwnd)}");
+        Log.Write($"  the window it stands in for: hwnd={a.Target.Hwnd} pid={a.Target.Pid} " +
+                  $"{(alive ? Describe(a.Target.Hwnd) : "gone, the rectangle it had is all there is")}");
+        // Asked only while the window is there to be compared with. A destroyed window frees its handle for
+        // the next one to be given, and the walk below matches on the handle: a recycled one would be
+        // reported as this window being below the panel, which is an answer about a different window
+        // altogether. A log line that can be confidently wrong is worse than one that says it did not ask.
+        Log.Write(alive
+            ? $"  in the Z-order the panel is {ZOrder(a.Panel.Hwnd, a.Target.Hwnd)}"
+            : "  in the Z-order: not compared, the window is gone");
+    }
+
+    private void Finish(int index, Anim a, bool restore)    {
         if (restore) _guard.Release(a.Target.Hwnd);
         // Only asks for the panel to go: destroying a window is the job of the thread that created
         // it, so this never calls Destroy itself.
@@ -1443,6 +1514,20 @@ internal sealed class Panel
     private bool _painted;             // whether the surface holds a card at all
 
     /// <summary>
+    /// The rectangle the compositor was last given, which is what says whether the frame about to be shown is a
+    /// move or only a change of opacity - and therefore whether the panel has to fight for its place in the
+    /// Z-order. Deliberately not the drawn rectangle above: that one is about which pixels of the surface have
+    /// to be drawn again, and a frame can be re-shown at a new place with nothing drawn at all.
+    ///
+    /// Seeded far enough outside any real rectangle that the first frame counts as a move and raises the panel
+    /// before anything is visible.
+    /// </summary>
+    private int _shownX = int.MinValue, _shownY = int.MinValue, _shownW, _shownH;
+
+    /// <summary>Said once, so that a raise that always fails does not fill the log with one line per frame.</summary>
+    private bool _raiseFailed;
+
+    /// <summary>
     /// The cap on a frame's own memory, now against the frame rather than the card. It was four megapixels,
     /// which is smaller than 4K, so on a 4K display a maximised window drew no panel at all and the
     /// animation silently did not appear; past this one a frame would be more than a hundred megabytes and
@@ -1544,18 +1629,34 @@ internal sealed class Panel
             catch { _iconDraw = null; }   // the unscaled icon is still usable
         }
 
-        uint ex = Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT;
+        // WS_EX_TOPMOST is in the creation flags rather than left to the SetWindowPos below, and that is the
+        // one thing this window was getting wrong: a window that is not visible yet does not always take the
+        // topmost band from SetWindowPos, and the panel is created hidden and shown a line later. Measured on
+        // the machine this was reported from, every panel of every animation logged "shown: topmost=False",
+        // while the advertisement's card - which is created with this flag and no call at all (AdsCard.Make) -
+        // logged topmost. A card that is not in the band cannot be above the window it is covering, and for a
+        // closing animation there is nothing else to fall back on.
+        uint ex = Native.WS_EX_TOPMOST | Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW |
+                  Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT;
         _hwnd = Native.CreateWindowExW(ex, ClassName, "", Native.WS_POPUP,
                                        anchorX, anchorY, startSize, startSize,
                                        IntPtr.Zero, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
         if (_hwnd == IntPtr.Zero) { Failed = true; return false; }
+        // Kept as well as the flag: the flag says what the window is, and this is what puts it at the top of
+        // the band it is in - which is the order the band is stacked in, and which anything that raises the
+        // window it covers can take from underneath it. See Present, which takes it back for every frame that
+        // moves the card.
         Native.SetWindowPos(_hwnd, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0,
                             0x0001 | 0x0002 | 0x0010);  // NOSIZE | NOMOVE | NOACTIVATE
         // UpdateLayeredWindow only updates content: it does not make the window visible.
         // This is the line the Windhawk mod has (ShowWindow(slot->splash, SW_SHOWNOACTIVATE))
         // and exactly the one this reimplementation was missing.
         Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
-        Log.Write($"panel 0x{_hwnd.ToInt64():X} shown: visible={Native.IsWindowVisible(_hwnd)}");
+        // The topmost bit is said out loud because the closing animation depends on it and has nothing else to
+        // fall back on: a panel that is not in the topmost band is a card that the window it is standing in for
+        // can be raised over, and Present re-raises on every move for exactly that reason.
+        Log.Write($"panel 0x{_hwnd.ToInt64():X} shown: visible={Native.IsWindowVisible(_hwnd)}, " +
+                  $"topmost={(Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE) & Native.WS_EX_TOPMOST) != 0}");
         // Frame 1 is drawn fully transparent on purpose: the panel window exists and is
         // "shown" from the start, but nothing is visible until the target window actually
         // appears. That is what keeps a never-shown helper window (the NVIDIA control panel
@@ -2197,6 +2298,42 @@ internal sealed class Panel
                          long tStart = 0, long tAlloc = 0, long tDraw = 0, long tPremul = 0)
     {
         if (!_surfaceReady) return;
+
+        // The Z-order is fought for whenever the card's rectangle changes, and left alone when only its opacity
+        // does. This is the one call every frame of every panel goes through, so it is the one place that can
+        // say whether the frame is a move or merely a fade.
+        //
+        // WHY IT HAS TO BE FOUGHT FOR. The panel is not owned by the window it covers - deliberately, because an
+        // owned window inherits its owner's cloaked state - so it is a window of its own in the band, and
+        // whatever raised the window it is standing in for can leave the panel underneath it. For a closing
+        // animation that is the whole of what the user sees: the real window is still there for its last frames
+        // and the card is supposed to cover it, so a card that has slipped below shows a window and a card both
+        // closing, which is what was reported. The upstream mod this was ported from says the same thing in its
+        // own words and re-raises on every frame of the zoom (mobile-open-animation.wh.cpp, ApplySplashFrame's
+        // raiseEachFrame) - and not on the frames of the handover, where the size is constant and
+        // UpdateLayeredWindow raises the window by itself. The two cases are told apart here by the rectangle
+        // rather than by a flag from the caller, because the rectangle is what the two cases differ in.
+        //
+        // SetWindowPos is synchronous, and a raise on every frame is what the mod warns against for a reason: it
+        // can be made to wait on a busy application's own window. A frame that only changes the opacity is the
+        // cheap one and stays cheap.
+        if (x != _shownX || y != _shownY || w != _shownW || h != _shownH)
+        {
+            _shownX = x; _shownY = y; _shownW = w; _shownH = h;
+            if (!Native.SetWindowPos(_hwnd, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0,
+                                     Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE)
+                && !_raiseFailed)
+            {
+                // Once per panel: a raise that fails does it every frame, and the frames still have to be
+                // drawn. The error is the thing worth having - a panel that cannot be raised is a panel that
+                // has to be hidden some other way, and there is no other way for a closing one.
+                _raiseFailed = true;
+                Log.Write($"panel 0x{_hwnd.ToInt64():X} could not be raised over the window: " +
+                          $"err={Marshal.GetLastWin32Error()}, topmost bit=" +
+                          $"{(Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE) & Native.WS_EX_TOPMOST) != 0}, " +
+                          $"visible={Native.IsWindowVisible(_hwnd)}");
+            }
+        }
 
         var dst = new POINT { X = x, Y = y };
         var size = new SIZE { Cx = w, Cy = h };

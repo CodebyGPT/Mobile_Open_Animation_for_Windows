@@ -173,6 +173,9 @@ internal static class Native
     /// <summary>GW_HWNDNEXT is 2; Animator walks the Z-order with it.</summary>
     public const uint GW_HWNDNEXT = 2;
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    /// <summary>The window at the top of the Z-order, which is where a walk down it starts. Asked with null for
+    /// the whole desktop rather than for one window's children, which is the list a topmost panel lives in.</summary>
+    [DllImport("user32.dll")] public static extern IntPtr GetTopWindow(IntPtr h);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern ushort RegisterClassExW(ref WNDCLASSEXW wc);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
