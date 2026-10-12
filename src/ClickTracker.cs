@@ -58,6 +58,24 @@ internal static class ClickTracker
     /// </summary>
     public static string LastSurfaceClass = "";
 
+    /// <summary>
+    /// The class every one of Windows' own dialogs has: MessageBox, TaskDialog, the shell's pickers and
+    /// confirmations, and "Open File - Security Warning" among them.
+    /// </summary>
+    public const string DialogClass = "#32770";
+
+    /// <summary>
+    /// Whether the last click landed on one of those dialogs.
+    ///
+    /// Such a click is recorded like any other - the point, the time and the surface are all the truth about
+    /// what happened - but it is never usable as the place a window comes from. A dialog is a question being
+    /// answered, and the button that was clicked on it is about to disappear; the window that follows was asked
+    /// for by whatever raised the dialog. That is also why the record is replaced rather than left alone: the
+    /// click before this one is no longer what the user was doing, so it is not fallen back to either. See
+    /// Animator.OnWindowCreated, which refuses the anchor instead of looking further back.
+    /// </summary>
+    public static bool LastWasDialog;
+
     public static void Start()
     {
         if (_hook != IntPtr.Zero) return;
@@ -172,9 +190,14 @@ internal static class ClickTracker
     /// tile or on a search result comes back None. That is the point of the whole check: those flyouts
     /// are gone by the time the window closes, so the place the click was made no longer exists, and a
     /// card shrinking towards a spot in an empty Start-menu area would be a lie.
+    ///
+    /// Internal rather than private so that probe/input can put a point over a real dialog and read the answer
+    /// back. The walk below - the deepest child up to its top level - is the half of the dialog rule that can be
+    /// wrong, and there is no way to reach it with a point except through this.
     /// </summary>
-    private static Surface ClassifyClick(POINT pt)
+    internal static Surface ClassifyClick(POINT pt)
     {
+        LastWasDialog = false;
         IntPtr h = Native.WindowFromPoint(pt);
         if (h == IntPtr.Zero) { LastSurfaceClass = ""; return Surface.None; }
 
@@ -184,6 +207,11 @@ internal static class ClickTracker
         var sb = new StringBuilder(64);
         Native.GetClassNameW(root, sb, 64);
         LastSurfaceClass = sb.ToString();
+        // The top level, not the window under the point: what a user clicks on a dialog is one of its buttons,
+        // and the class that says "dialog" belongs to the dialog around it. The same walk the shell-surface test
+        // above depends on - an icon on the desktop is inside the desktop's list view, and the taskbar's button
+        // is inside the taskbar - so the two rules cannot read the same click as different things.
+        LastWasDialog = LastSurfaceClass == DialogClass;
         return SurfaceOfClass(LastSurfaceClass);
     }
 

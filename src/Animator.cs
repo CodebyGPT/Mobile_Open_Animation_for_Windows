@@ -35,6 +35,16 @@ internal sealed class Animator
         public bool FromClick;
 
         /// <summary>
+        /// The anchor is not a point the user made but the window's own middle, so it is taken again for every
+        /// frame instead of being fixed where the window was when it was created. See RequestGrowFrame, and
+        /// InPlaceAnchor for what "the window's own middle" is.
+        /// </summary>
+        public bool AnchorFollowsWindow;
+
+        /// <summary>Whether the one line saying the window moved has been written yet.</summary>
+        public bool AnchorFollowed;
+
+        /// <summary>
         /// That click was on the desktop or on the taskbar - the two launch points that are still there
         /// when the window closes. Only these windows get an Origin recorded, and which of the two it was
         /// is what the closing animation checks the remembered point against, once the window itself is
@@ -513,6 +523,25 @@ internal sealed class Animator
     }
 
     /// <summary>
+    /// Where an in-place card grows from: the middle of the window, less half the start square. The same thing
+    /// the upstream mod calls its fallback - "window centre (fallback when there is no click position)" - in the
+    /// coordinates a frame is drawn in, where the anchor is the top-left of the start square rather than a point
+    /// in the middle of anything.
+    ///
+    /// Shared with probe/panel, which puts the two rectangles from a real report through it: an mpv window that
+    /// appeared as 202x100 at (190,190) and was 1330x793 at (615,373) by the end of the same grow.
+    /// </summary>
+    internal static POINT InPlaceAnchor(RECT target, int startSize)
+    {
+        int half = startSize / 2;
+        return new POINT
+        {
+            X = target.Left + (target.Right - target.Left) / 2 - half,
+            Y = target.Top + (target.Bottom - target.Top) / 2 - half,
+        };
+    }
+
+    /// <summary>
     /// Asks the animation thread for the frame this moment's geometry calls for, and answers how far through
     /// the grow it is. Shared by the tick and by the show event, which is the point of it: the same geometry
     /// from either, so that starting the animation from the event cannot disagree with the frames after it.
@@ -530,6 +559,24 @@ internal sealed class Animator
         double e = Ease(t);
         var tgt = TargetRect(a.Target.Hwnd);          // live, every frame
         int tw = tgt.Right - tgt.Left, th = tgt.Bottom - tgt.Top;
+        // Both ends of the grow are read live, and that is the whole of this. The destination always was; the
+        // anchor was taken once, where the window was when it was *created*, and a window is allowed to appear
+        // in one place and move itself to another. mpv's does: it is 202x100 at (190,190) when it appears and
+        // 1330x793 at (615,373) by the end of the same grow, so a card anchored at its creation was drawn in
+        // the top-left corner while the window it stood in for ended up in the middle of the screen. An anchor
+        // the user made with a click or a key press is theirs and is never moved; this one is only ever "where
+        // the window is", so it is asked again rather than remembered.
+        if (a.AnchorFollowsWindow)
+        {
+            var at = InPlaceAnchor(tgt, a.StartSize);
+            if (!a.AnchorFollowed && (at.X != a.AnchorX || at.Y != a.AnchorY))
+            {
+                a.AnchorFollowed = true;
+                Log.Write($"hwnd={a.Target.Hwnd} the window is not where it appeared; the in-place anchor " +
+                          $"follows it from {a.AnchorX},{a.AnchorY} to {at.X},{at.Y}");
+            }
+            a.AnchorX = at.X; a.AnchorY = at.Y;
+        }
         int x = (int)Math.Round(a.AnchorX + (tgt.Left - a.AnchorX) * e);
         int y = (int)Math.Round(a.AnchorY + (tgt.Top - a.AnchorY) * e);
         int w = (int)Math.Round(a.StartSize + (tw - a.StartSize) * e);
@@ -889,7 +936,16 @@ internal sealed class Animator
         POINT pt;
         bool recent = ClickTracker.HasRecentClick(ClickTracker.DefaultGraceMs);
         bool started = !recent && ClickTracker.LaunchedByClick(w.Pid);
-        bool fromClick = recent || started;
+        bool clicked = recent || started;
+        // A click on a dialog is not a launch point. A dialog is a question being answered - the user clicked a
+        // button on it and that button is about to disappear - and the window that follows was asked for by
+        // whatever raised the dialog. So the click is refused, and *not* fallen back from: the click record was
+        // replaced by it (see ClickTracker.LastWasDialog), so the older click is not what the user was doing
+        // either, and growing a card out of a point that was clicked before a question was asked would be an
+        // anchor this program cannot justify. The window grows in place, exactly as it does for a window that
+        // opened on its own.
+        bool dialogClick = clicked && ClickTracker.LastWasDialog;
+        bool fromClick = clicked && !dialogClick;
         // Only the in-place case gets the nudge below: the other two anchors are real points on the screen.
         bool inPlace = false;
         if (fromClick)
@@ -915,7 +971,19 @@ internal sealed class Animator
                 X = w.X + w.Width / 2 - _s.StartSizePx / 2,
                 Y = w.Y + w.Height / 2 - _s.StartSizePx / 2,
             };
-            Log.Write($"  -> anchor: nothing to grow from ({KeyTracker.LastReason}); in place at {pt.X},{pt.Y}");
+            // Which of the two refused is worth saying: a dialog is the user answering a question, and
+            // "no Enter has been pressed" over the top of that would send whoever reads the log looking for a
+            // keyboard that was never involved.
+            string why = dialogClick
+                ? $"the click at {ClickTracker.LastX},{ClickTracker.LastY} landed on a dialog " +
+                  $"({ClickTracker.LastSurfaceClass}), which is an answer rather than a launch point"
+                : KeyTracker.LastReason;
+            // The point is what the panel window is made at and nothing more: this anchor is not a place the
+            // user chose, it is the window's own middle, and that is taken again for each frame - see
+            // Anim.AnchorFollowsWindow and InPlaceAnchor. The two agree whenever the window is still where it
+            // appeared, which is most windows; the ones they disagree about are the ones this exists for.
+            Log.Write($"  -> anchor: nothing to grow from ({why}); in place, from the window's own middle " +
+                      $"(first taken at {pt.X},{pt.Y}, and followed if the window moves)");
         }
 
         if (!_guard.Hide(w.Hwnd)) { Log.Write("  -> Hide() declined; nothing animated"); return; }
@@ -1018,6 +1086,7 @@ internal sealed class Animator
             Duration = Math.Max(30, _s.DurationMs),
             AnchorX = pt.X, AnchorY = pt.Y,
             FromClick = fromClick,
+            AnchorFollowsWindow = inPlace,
             Surface = ClickTracker.LastSurface,
             StartSize = startSize,
             StartRadius = startRadius,

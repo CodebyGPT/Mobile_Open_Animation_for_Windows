@@ -53,6 +53,23 @@ internal static class KeyTracker
     /// <summary>Why the last press could not be used as an anchor, for the log.</summary>
     public static string LastReason = "no Enter has been pressed";
 
+    /// <summary>The class of a push button - the control a dialog puts its answers on.</summary>
+    public const string ButtonClass = "Button";
+
+    /// <summary>
+    /// Whether the control the anchor was taken from is an answer rather than a launch.
+    ///
+    /// Enter on a dialog's button is the user confirming a question, and the window that follows such a dialog
+    /// was asked for by whatever raised it - so the button is not the place it comes from and the press is
+    /// dropped. This is the narrow half of a test the class name cannot make on its own: the Run box is a shell
+    /// #32770 as well (see IsShellSurface), and what tells the two apart is that the Run box's focus is its text
+    /// field while a confirmation's focus is a button.
+    ///
+    /// Public because probe/input feeds it the class of a real button on a real dialog rather than the word: the
+    /// assumption worth pinning is that Windows still calls that class what this says it does.
+    /// </summary>
+    public static bool IsAnswerControl(string cls) => cls == ButtonClass;
+
     private static POINT _anchor;
     private static bool _haveAnchor;
 
@@ -169,6 +186,17 @@ internal static class KeyTracker
         IntPtr target = foreground;
         var gti = new Native.GUITHREADINFO { CbSize = (uint)Marshal.SizeOf<Native.GUITHREADINFO>() };
         if (Native.GetGUIThreadInfo(0, ref gti) && gti.HwndFocus != IntPtr.Zero) target = gti.HwndFocus;
+
+        // Asked of the focused control before its rectangle is, because an answer is refused whether or not it
+        // has a rectangle worth having. Only the control inside a shell surface is looked at - everything else
+        // was refused above - so a button here is a button on a dialog of the shell's, which is a confirmation.
+        var focused = new StringBuilder(64);
+        Native.GetClassNameW(target, focused, 64);
+        if (IsAnswerControl(focused.ToString()))
+        {
+            LastSource = "a button on a dialog, which is an answer rather than a launch";
+            return;
+        }
 
         if (!Native.GetWindowRect(target, out var r) || r.Right <= r.Left || r.Bottom <= r.Top)
         {
