@@ -28,6 +28,27 @@
 - **Dialogs, popups and tool windows**
 - **Windows the user did not open themselves**
 
+### Building
+
+Running the program needs no build - take `MobileOpenAnimation.exe` from
+[Releases](https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows/releases). Building it needs a .NET SDK,
+and this repository does not carry one: the SDK used here is a portable one of a few hundred megabytes, and it lives
+in `.toolchain/`, which git ignores.
+
+- **Portable SDK, nothing installed system-wide.** Extract a .NET SDK zip so that `dotnet.exe` sits at
+  `.toolchain\dotnet\dotnet.exe`, then run `.\build.ps1`. That script redirects NuGet's cache, the CLI home and
+  `%APPDATA%`/`%LOCALAPPDATA%` under `.toolchain` too, so the build writes nothing outside this folder. The exe
+  lands at `src\bin\Release\net48\MobileOpenAnimation.exe`, carrying the time and the commit it was built from.
+- **SDK already installed.** `dotnet build src\Moa.csproj -c Release` does the same thing. The version it reports
+  then reads `unknown`, because the time and the commit are what `build.ps1` passes in; add
+  `-p:InformationalVersion=` yourself if you want them.
+
+The first build needs the network once. The project targets .NET Framework 4.8 - so that the built exe runs on
+Windows 10 1903 and later with nothing installed - and for that target the SDK fetches
+`Microsoft.NETFramework.ReferenceAssemblies` from NuGet unless the 4.8 targeting pack is already on the machine.
+Once that package is in the cache under `.toolchain/nuget`, later builds have nothing to restore and do not reach
+the network at all.
+
 ### License
 
 Released under the **GNU Affero General Public License, version 3 or later** (AGPL-3.0-or-later).
@@ -63,6 +84,23 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 - **带反作弊的在线游戏、部分安全软件**（这类程序的窗口不接受外部程序改变其状态）
 - **对话框、弹窗、工具窗口**
 - **不是通过用户点击弹出来的窗口**
+
+### 如何编译
+
+**运行**它不需要编译：直接从 [Releases](https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows/releases)
+下载 `MobileOpenAnimation.exe` 即可。想自己编则需要一个 .NET SDK，而本仓库不附带 SDK——这里用的是几百 MB 的
+便携版，放在被 git 忽略的 `.toolchain/` 里。
+
+- **用便携版（系统里什么都不装）**：把 .NET SDK 解压到 `.toolchain\dotnet\dotnet.exe` 这个位置，然后运行
+  `.\build.ps1`。该脚本还会把 NuGet 缓存、CLI home 以及 `%APPDATA%`/`%LOCALAPPDATA%` 一并重定向到
+  `.toolchain` 下，因此构建过程不会在本文件夹之外写任何东西。产物是
+  `src\bin\Release\net48\MobileOpenAnimation.exe`，其中带有编译时间与所依据的提交号。
+- **机器上已装好 SDK**：`dotnet build src\Moa.csproj -c Release` 效果相同。这样编出来的版本号显示为
+  `unknown`，因为时间和提交号是 `build.ps1` 传进去的；需要的话自行加上 `-p:InformationalVersion=`。
+
+首次编译需要联网一次：目标框架是 .NET Framework 4.8（这样编出来的 exe 在 Win10 1903 及以上无需安装任何
+依赖），针对该框架 SDK 会从 NuGet 获取 `Microsoft.NETFramework.ReferenceAssemblies`，除非机器上已装 4.8
+目标包（targeting pack）。该包进入 `.toolchain/nuget` 缓存之后，后续编译不会再还原任何东西，也完全不碰网络。
 
 ### 许可
 
