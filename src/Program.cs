@@ -414,6 +414,7 @@ internal static class Program
         AdsCard.CaptionMute = Strings.T("AdsMute");
         AdsCard.CaptionUnmute = Strings.T("AdsUnmute");
         AdsCard.CaptionRemaining = Strings.T("AdsRemaining");
+        AdsCard.CaptionPending = Strings.T("AdsPending");
         AdsCard.CaptionSkip = Strings.T("AdsSkip");
         AdsCard.CaptionSearch = Strings.T("AdsSearch");
         AdsCard.MuteRemembered = m => { _s.AdsMuted = m; _s.Save(); };

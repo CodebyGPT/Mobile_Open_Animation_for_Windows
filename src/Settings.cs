@@ -456,6 +456,12 @@ internal static class Strings
         // The number is the only part of it that changes, which is why the words around it are one format string
         // rather than three strings joined in the card - a translator has a whole sentence to work with.
         ["AdsRemaining"] = ("{0}s left", "视频剩余：{0}s"),
+        // And what it says until there is a number to put in that format: the player is asked how long the file
+        // is and answers when it is ready, so there is always a moment with no answer at all. A placeholder
+        // rather than the cap, which is what used to be there and was a figure the card had made up - the
+        // longest it may stay up, not the length of what is playing. Two dashes, and the same in every language;
+        // it is in the table because everything the user reads is.
+        ["AdsPending"]   = ("--", "--"),
         ["AdsSkip"]      = ("Skip", "跳过"),
         // The bold words in front of the advertisement's own name, on the capsule that searches for it. Short on
         // purpose: what follows is the file's name, which is the thing being shown.

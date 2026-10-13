@@ -70,6 +70,20 @@ internal sealed class AdsCard
     public static string CaptionRemaining = "{0}s left", CaptionSkip = "Skip";
 
     /// <summary>
+    /// What the countdown says before the length of the file is known: "--", and nothing else.
+    ///
+    /// There is always a moment of this - the file is opened, and how long it is is a question for the player,
+    /// which answers when it is ready, hundreds of milliseconds later. What it used to say instead was the cap
+    /// - "<c>360s left</c>" - and that was a number the advertisement had just made up: it is the longest a
+    /// card may stay up, not the length of what is playing. It read as a countdown that started from the cap
+    /// and then jumped to the real figure, which is exactly what it was. Reported as the first frame of every
+    /// advertisement saying 360.
+    ///
+    /// Not a format, because there is no number to put in it; see <see cref="CaptionRemaining" /> for that one.
+    /// </summary>
+    public static string CaptionPending = "--";
+
+    /// <summary>
     /// What the search capsule says in front of the file's own name, in bold: "搜一搜". It is the words of the
     /// control - what pressing it does - and the name after it is what it is about; the shortest word that says it
     /// rather than a sentence, because the name it introduces is the thing being shown. Set from Strings by the
@@ -616,7 +630,10 @@ internal sealed class AdsCard
         // its left edge at the bottom.
         _countdown = Capsule.Make(_hwnd, _style, _full.Left + w - pad, _full.Top + pad,
                                  Capsule.Anchor.Right, action: CaptionSkip);
-        _countdown?.Set(string.Format(CaptionRemaining, Math.Max(0, _capSeconds)), Capsule.Glyph.None);
+        // What it says until the player has said how long the file is: a placeholder, not the cap. The cap is
+        // not a countdown - it is the longest this card may stay up - and putting it here made the first second
+        // of every advertisement read "360s left" and then jump to the real figure. See CaptionPending.
+        _countdown?.Set(CaptionPending, Capsule.Glyph.None);
         _mute = Capsule.Make(_hwnd, _style, _full.Left + pad, _full.Top + h - pad - _style.Height,
                              Capsule.Anchor.Left, action: null);
         _mute?.Set(_muted ? CaptionUnmute : CaptionMute, _muted ? Capsule.Glyph.Muted : Capsule.Glyph.Sound);
@@ -640,6 +657,11 @@ internal sealed class AdsCard
             $"{nameW}px wide in a {_nameStyle.Height}px capsule at {_full.Left + w / 2 - nameW / 2},{nameY}," +
             $" centred and {NameFromBottomPercent}% of the card's height up from its bottom " +
             $"(widest {_labelCeiling}px)");
+        // Said out loud because it is the only thing on the card that deliberately shows a placeholder, and
+        // "the first frame said 360" is the report this exists to answer: the line is written in the same call
+        // that sets it, so a log in which this comes before the countdown's real figure is one where the card
+        // never showed a number it had made up. probe/media checks that order.
+        Say($"ads: the countdown says \"{CaptionPending}\" until the player has said how long the file is");
     }
 
     /// <summary>
