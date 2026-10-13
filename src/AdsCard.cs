@@ -344,9 +344,14 @@ internal sealed class AdsCard
         // Windows 11, square elsewhere - and the advertisement takes over that rectangle, so it wears the same
         // corner: a hard square appearing where a rounded card was is the one seam the fade cannot hide. Free,
         // because it is the same region the collapse at the other end already uses.
+        //
+        // A card that grows starts as a disc, and with the switch off it does not: the disc is the dynamic part
+        // of the corner, and with the switch off there is nothing dynamic about it - the card arrives at, and
+        // keeps, the corner the collapse would have ended on. See Animate, which keeps it there for the whole
+        // grow; the two have to agree, because the region is only set where it is changed.
+        int startW = start.Right - start.Left, startH = start.Bottom - start.Top;
         if (!grow) Round(card, w, h);
-        else Round(card, start.Right - start.Left, start.Bottom - start.Top,
-                   (start.Right - start.Left) / 2);
+        else Round(card, startW, startH, RoundOff ? startW / 2 : Radius);
 
         _open = card;
         card._startedAt = (int)Now;
@@ -566,13 +571,24 @@ internal sealed class AdsCard
         // Both were missing at one point or the other: the logon advertisement grew as a hard square whatever
         // the setting said, because the only card that ever got a corner was the window one, and it gets it
         // once, at birth, having no grow of its own.
-        if (RoundOff)
-        {
-            double half = Math.Min(w, h) / 2.0;
-            _corner = (int)Math.Round(_shrinking ? Radius + (half - Radius) * e
-                                                 : half + (Radius - half) * e);
-            Round(this, w, h, _corner);
-        }
+        //
+        // The region is set on every frame of the movement, either way, and that is the whole of a report about
+        // the switch being off: nothing set it at all then, so the card kept the disc it was born as from the
+        // first frame to the last while the window around it grew to the whole screen - and a region is in the
+        // window's own coordinates, so as the window travelled to 0,0 the disc travelled with it and sat in the
+        // top-left corner of a full-screen card. Which is also why only the corner answered a click: a window's
+        // region is its shape for hit-testing as much as for painting. The video played and the controls hovered
+        // through all of it - the video is a child window, which a parent's region does not clip, and the hover
+        // is the card asking where the cursor is rather than being told - and nothing else did anything.
+        //
+        // With the switch off the corner is the fixed one the collapse ends on rather than a disc, which is the
+        // same reading of the switch the program's own animations use: the rounding does not animate, it stays
+        // the corner the window being covered has.
+        double half = Math.Min(w, h) / 2.0;
+        _corner = RoundOff
+            ? (int)Math.Round(_shrinking ? Radius + (half - Radius) * e : half + (Radius - half) * e)
+            : Radius;
+        Round(this, w, h, _corner);
 
         // And the last of it fades, from the same point in the same curve the program's own closing cards
         // fade from: holding its opacity while it is still large, then going quickly, so that what is left
