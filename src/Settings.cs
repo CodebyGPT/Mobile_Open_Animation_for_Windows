@@ -503,12 +503,15 @@ internal static class Strings
         // The question asked at the first start in a folder that already has things in it, the title it is asked
         // under, and the two answers to it. The title names the situation rather than the program: the question is
         // about the folder, and "Mobile Open Animation for Windows" over it would be the tray tooltip, not a
-        // heading. Asked rather than announced because the answer decides whether anything is written at all: the
+        // heading. It says "for the first time" because that is the whole of when it is asked - the ini beside the
+        // program is the record that it has run here before, so a folder this program has already run in is never
+        // asked about again - and a title that did not say so read as a warning that would come back every start.
+        // Asked rather than announced because the answer decides whether anything is written at all: the
         // caller has to be able to leave without the program having made a file in the folder the user is about
         // to move it out of. Deliberately says nothing about what the program keeps beside itself - which is the
         // whole reason the folder matters, and is also a feature nobody has been told about yet.
         ["CrowdedTitle"] =
-            ("Starting from a folder that already has other files in it", "启动时脏目录提醒"),
+            ("Starting for the first time from a folder that already has other files in it", "首次启动时脏目录提醒"),
         ["CrowdedAsk"] =
             ("This folder already has other files in it. Continue starting the program from this folder?",
              "当前目录已存在其他的文件，确定让程序继续从该目录启动吗？"),
