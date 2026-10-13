@@ -490,18 +490,6 @@ internal static class Strings
              "无法修改开机自启设置，已保持原状。\n\n" +
              "它是你自己注册表里的一个值：运行 regedit，位置在 " +
              "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run。"),
-        // Asked before a start-up entry is written over one that is already there under the same name and is
-        // not ours. Four strings because the question has two answers of the program's own naming, so it goes
-        // through Native.Ask rather than a message box: a message box's two buttons say OK and Cancel and cannot
-        // be made to say Overwrite and Cancel.
-        ["AutoStartConflictTitle"] = ("Startup entry conflict", "启动项存在冲突"),
-        ["AutoStartConflict"] =
-            ("A start-up entry with the same name is already under the Run key in your own part of the " +
-             "registry, but it starts something other than this program. Overwrite it?",
-             "注册表启动项（HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run）" +
-             "已存在同名条目，但指向的不是当前程序，是否覆盖？"),
-        ["AutoStartOverwrite"] = ("Overwrite", "覆盖"),
-        ["AutoStartCancel"]    = ("Cancel", "取消"),
         ["AdminRequired"] =
             ("Mobile Open Animation for Windows must run as an administrator.\n\n" +
              "Without it, Windows' user interface privilege isolation stops this program from\n" +

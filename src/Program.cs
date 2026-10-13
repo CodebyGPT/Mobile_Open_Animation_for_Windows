@@ -644,27 +644,13 @@ internal static class Program
 
                 bool wanted = !real;
 
-                // An entry is already there under our name and it is not ours. Two ways that happens and they
-                // cannot be told apart from the value: something else put one there, or this program has been
-                // moved or renamed since it wrote one and what is left is its own stale entry. Either way the
-                // write below would replace something this program did not just write, so it is asked about
-                // rather than done -- the answer that is guessed at when the question cannot be asked at all is
-                // the one that writes nothing; see Native.Ask.
-                //
-                // Asked rather than reconciled, so the entry is left alone on a "no" and the menu stays as it
-                // was: the check mark already says off, and off is still true afterwards, so there is nothing to
-                // correct. Not the reconcile branch above, which is about a display that disagrees with reality.
-                if (wanted && AutoStart.Conflicts())
-                {
-                    bool overwrite = Native.Ask(Strings.T("AutoStartConflictTitle"),
-                                                Strings.T("AutoStartConflict"),
-                                                "", Strings.T("AutoStartOverwrite"),
-                                                Strings.T("AutoStartCancel"), Native.TD_ERROR_ICON);
-                    Log.Write($"autostart: an entry is already there and is not ours; the user said " +
-                              $"{(overwrite ? "overwrite" : "leave it alone")} ({Native.AskNote ?? "as asked"})");
-                    if (!overwrite) break;
-                }
-
+                // No question is asked about an entry that is already there under our name and is not ours.
+                // Two ways that happens and they cannot be told apart from the value: something else put one
+                // there, or this program has been moved or renamed since it wrote one and what is left is its
+                // own stale entry. Either way the switch that was just clicked is a request to start this
+                // program at logon, and writing the entry is the whole of what it means - which is what every
+                // other program's Start with Windows does, and what the menu's own tick, reconciled above, has
+                // just told the user the state of.
                 string err;
                 bool now = AutoStart.Apply(wanted, out err);
                 if (now != wanted)

@@ -28,7 +28,8 @@
 //
 // Neither of those builds is published any more, and that is why there is no migration code here: the
 // shortcut cannot be on anybody's machine, because nobody could download the build that wrote one. The
-// one machine that had it was the one it was built on, and the file was deleted by hand.
+// one machine that had it was the one it was built on, and the build that still carried the code to
+// delete it deleted it there - see BACKLOG, and the log line it wrote at 05:50:53.
 //
 // The logon argument
 // ------------------
@@ -56,13 +57,18 @@
 // shell, which is a real change rather than this one. The Start-up shortcut this replaced had the same
 // hole, for the same reason - Environment.SpecialFolder.Startup is the elevated user's folder.
 //
-// The three states a value can be in
-// ----------------------------------
-// Not there, ours, ours-but-out-of-date, or somebody else's - and the three are acted on differently
-// rather than squashed into a bool. Ours is what the menu shows. Somebody else's is what the user is
-// asked about before it is replaced. Ours-but-out-of-date is not asked about, because it is this
-// program's own entry: it happens when the argument is edited out of the value by hand, and the next
-// time the switch is turned on it is simply written again.
+// The four states a value can be in
+// ---------------------------------
+// Not there, ours, ours-without-the-argument, or somebody else's. Only the first two matter to the caller -
+// the menu shows whether this program starts at logon, and everything that is not ours is not - but the four
+// are kept apart for the log, because "nothing is there" and "something else is under our name" are different
+// answers to the same question and only one of them is worth looking into.
+//
+// Nothing is asked before a value that is not ours is written over. The click says "start this program at
+// logon"; that is the whole of what the switch means, and it is what the tick the user just looked at told
+// them the state of. The two ways a value that is not ours gets there - something else put it there, or this
+// program was moved or renamed since it wrote one - are not worth a dialog, and a dialog would be the only
+// thing in the program that stands between the user and the switch they pressed.
 //
 // There is no migration code, and that is deliberate rather than an oversight: there has never been a
 // published build that wrote a Run value, so there is nothing on any machine to migrate from. The one
@@ -113,10 +119,12 @@ internal static class AutoStart
         /// <summary>This program, started with the argument that makes it a logon start.</summary>
         Ours,
 
-        /// <summary>This program, with that argument edited out of the value by hand.</summary>
+        /// <summary>This program, with that argument edited out of the value by hand. Off, like anything else
+        /// that is not Ours; kept apart only so the log can say which of them it was.</summary>
         OutOfDate,
 
-        /// <summary>A value under our name that starts something else.</summary>
+        /// <summary>A value under our name that starts something else. Off, and written over when the switch
+        /// is turned on; see the note above.</summary>
         Foreign,
     }
 
@@ -145,17 +153,6 @@ internal static class AutoStart
         Log.Write($"autostart: {why}");
         return kind == Kind.Ours;
     }
-
-    /// <summary>
-    /// Whether an enable would replace an entry that starts something this program did not put there.
-    ///
-    /// False for an entry of this program's own that is merely out of date: that one is written again
-    /// without asking. True only for a value that names another program - or for one that cannot be read at
-    /// all, which is the same thing from here and is the answer that asks rather than the one that overwrites.
-    /// </summary>
-    public static bool Conflicts() => Conflicts(RunKeyPath);
-
-    internal static bool Conflicts(string keyPath) => What(keyPath, out _) == Kind.Foreign;
 
     /// <summary>
     /// Whether a command line says this copy was started by the start-up entry. The argument is compared
@@ -208,7 +205,7 @@ internal static class AutoStart
     }
 
     /// <summary>
-    /// Which of the three things an entry under our name is, and the sentence for the log that says how it
+    /// Which of the four things an entry under our name is, and the sentence for the log that says how it
     /// was decided.
     ///
     /// The value is recognised by containing the two things this program writes into it - its own path and
@@ -218,9 +215,8 @@ internal static class AutoStart
     /// program has to be deliberately made up, and the worst it costs is that such a value is treated as ours
     /// and written over - which is what the switch being clicked asks for anyway.
     ///
-    /// A value with the right path but no argument is "out of date" rather than "not ours", and the two are
-    /// kept apart because they are different questions: ours-without-the-argument is written again without
-    /// asking, and anything else gets the overwrite question. See Conflicts.
+    /// Only Ours and Nothing decide anything; the other two are off, like Nothing is, and are told apart from
+    /// it so the log can say which of them was found.
     /// </summary>
     private static Kind What(string keyPath, out string why)
     {
