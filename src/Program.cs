@@ -30,14 +30,14 @@ internal static class Program
     private static Watcher _watcher = null!;
 
     /// <summary>
-    /// Whether the start-up entry is there, cached so the tray menu opens instantly - the check is
-    /// one registry read and the menu is built on every right click. Refreshed at start-up, on every right
-    /// click, and after a change.
+    /// Whether the logon task is there and is this program's, cached so the tray menu opens instantly - the
+    /// check is two schtasks runs and the menu is built on every right click. Refreshed at start-up, on every
+    /// right click, and after a change.
     /// </summary>
     internal static bool AutoStartOn;
 
     /// <summary>
-    /// Whether this copy is the one the start-up entry started, and therefore the only copy a logon
+    /// Whether this copy is the one the logon task started, and therefore the only copy a logon
     /// advertisement is played by. Read once from the command line at start-up; see AutoStart.LogonArgument
     /// for why the argument is the only thing that can answer it.
     /// </summary>
@@ -53,16 +53,11 @@ internal static class Program
         catch (Exception ex) { Report("startup", ex); return 1; }
     }
 
-    internal static bool IsElevated()
-    {
-        try
-        {
-            using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
-            return new System.Security.Principal.WindowsPrincipal(id)
-                .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
-        }
-        catch { return false; }
-    }
+    /// <summary>
+    /// Whether this process really is running with the elevated token. Asked of the token itself - see
+    /// Native.IsElevated, which is where the reason this is not a role check lives.
+    /// </summary>
+    internal static bool IsElevated() => Native.IsElevated();
 
     /// <summary>
     /// The single-instance guard, held for the whole life of the process and never disposed - and that is
@@ -175,7 +170,7 @@ internal static class Program
         // level, and Shell_NotifyIcon is a message to Explorer's tray window, which is
         // subject to the same rule. If this says False while the tray icon only appears
         // when elevated, that is the whole explanation for both symptoms.
-        Log.Write($"elevated={IsElevated()}");
+        Log.Write($"elevated={IsElevated()} integrity={Native.Integrity()}");
         Strings.Use(_s.Language);
 
         // Silent on purpose. A tray program that is already running needs no dialog to say so: the tray
@@ -246,16 +241,17 @@ internal static class Program
         // post its frame ticks to.
         _anim.Start(_host.Hwnd);
 
-        // The start-up entry is read once here. ShowMenu must not read the registry on every right click,
-        // and What logs what it found either way, including what it was looking for when the entry exists
-        // but starts something else.
+        // The logon task is read once here. ShowMenu must not run schtasks on every right click, and the
+        // query's own exit code and output go to the log through AutoStart: "there is no task" and "schtasks
+        // could not be run at all" both come out of IsEnabled as false, and only one of them is worth worrying
+        // about.
         AutoStartOn = AutoStart.IsEnabled();
 
-        // And whether this copy is the one the entry started, which is the whole of what a logon
-        // advertisement is for. Nothing else distinguishes it; see AutoStart.LogonArgument.
+        // And whether this copy is the one the task started, which is the whole of what a logon advertisement
+        // is for. Nothing else distinguishes it; see AutoStart.LogonArgument.
         StartedAtLogon = AutoStart.SaysLogon(Environment.GetCommandLineArgs());
         Log.Write($"started at logon: {StartedAtLogon} " +
-                  $"(HKCU's Run entry passes {AutoStart.LogonArgument}; this copy's command line is " +
+                  $"(the task passes {AutoStart.LogonArgument}; this copy's command line is " +
                   $"{string.Join(" ", Environment.GetCommandLineArgs().Skip(1))})");
 
         // Running means working, and exiting means not working: there is deliberately no paused
@@ -449,7 +445,7 @@ internal static class Program
     /// entry.
     ///
     /// <paramref name="forced" /> skips those conditions and nothing else - the Debug menu's entry runs one
-    /// however the start-up entry and the logon-advertisement switch are set, because looking at the
+    /// however the logon task and the logon-advertisement switch are set, because looking at the
     /// advertisement
     /// is the only thing that entry is for. What it cannot skip is the folder being empty, which is the one
     /// condition that is not a setting but a fact, and the submenu being hidden - see Ads.Allowed, which is a
@@ -467,16 +463,15 @@ internal static class Program
 
         if (!forced)
         {
-            // A logon advertisement is for the copy the start-up entry started, and for no other copy. The
-            // switch and the entry being there are both necessary and neither is sufficient: a menu click that
-            // starts the program by hand is not a logon, and playing sixteen seconds of full-screen
-            // advertisement at every manual start is what this costs when the two are confused. Reported
-            // rather than skipped silently, because a logon where no advertisement appeared has to be
-            // answerable from the log.
+            // A logon advertisement is for the copy the logon task started, and for no other copy. The switch
+            // and the task being there are both necessary and neither is sufficient: a menu click that starts
+            // the program by hand is not a logon, and playing sixteen seconds of full-screen advertisement at
+            // every manual start is what this costs when the two are confused. Reported rather than skipped
+            // silently, because a logon where no advertisement appeared has to be answerable from the log.
             if (!StartedAtLogon)
             {
                 Log.Write("ads: this copy was not started at logon, so no logon advertisement" +
-                          $" (the Run entry passes {AutoStart.LogonArgument}, and this copy did not get it)");
+                          $" (the task passes {AutoStart.LogonArgument}, and this copy did not get it)");
                 return;
             }
 
@@ -635,29 +630,29 @@ internal static class Program
             case MenuLangZh: _s.Language = Lang.ChineseSimplified; Strings.Use(_s.Language); _s.Save(); break;
             case MenuAutoStart:
             {
-                // Reconcile first, act second. The check mark can be stale - the value may have
-                // been written or deleted by something else since the menu was drawn - so if the
-                // display disagrees with reality, the click's job is to correct the display, and
-                // nothing is written or deleted at all. Only when the display was accurate is the
-                // click read as "I want the opposite of this".
+                // Reconcile first, act second. The check mark can be stale - the task may have been
+                // registered or deleted by something else since the menu was drawn, and Task Scheduler can
+                // switch it off without deleting it - so if the display disagrees with reality, the click's job
+                // is to correct the display, and nothing is written or deleted at all. Only when the display
+                // was accurate is the click read as "I want the opposite of this".
                 bool shown = AutoStartOn;
                 bool real = AutoStart.IsEnabled();
                 if (real != shown)
                 {
-                    Log.Write($"autostart: menu showed {shown}, the entry is {real}; correcting the menu only");
+                    Log.Write($"autostart: menu showed {shown}, the task is {real}; correcting the menu only");
                     AutoStartOn = real;
                     break;
                 }
 
                 bool wanted = !real;
 
-                // No question is asked about an entry that is already there under our name and is not ours.
-                // Two ways that happens and they cannot be told apart from the value: something else put one
-                // there, or this program has been moved or renamed since it wrote one and what is left is its
-                // own stale entry. Either way the switch that was just clicked is a request to start this
-                // program at logon, and writing the entry is the whole of what it means - which is what every
-                // other program's Start with Windows does, and what the menu's own tick, reconciled above, has
-                // just told the user the state of.
+                // No question is asked about a task that is already there and is not this program's. Two ways
+                // that happens and they cannot be told apart from the XML: something else put one there, or this
+                // program has been moved since it wrote one and what is left is its own stale task. Either way
+                // the switch that was just clicked is a request to start this program at logon, and registering
+                // the task is the whole of what it means - which is what every other program's Start with
+                // Windows does, and what the menu's own tick, reconciled above, has just told the user the state
+                // of.
                 string err;
                 bool now = AutoStart.Apply(wanted, out err);
                 if (now != wanted)
@@ -1025,10 +1020,10 @@ internal sealed class TrayHost
     /// <summary>Opens the tray menu. Public because the About box's launch-ad code ends by asking for it.</summary>
     public void ShowMenu()
     {
-        // Re-checked here and not only at start-up: the value can be removed by anything else on the
-        // machine - the user in regedit, a cleanup tool, another start-up manager - and a check mark that
-        // disagrees with reality is worse than none at all. Costs one registry read before the menu appears,
-        // which is what is left of what used to be two schtasks calls.
+        // Re-checked here and not only at start-up: the task can be deleted by anything else on the machine -
+        // the user in Task Scheduler, another account, a cleanup tool - and it can be switched off there
+        // without being deleted, which is why the check is IsEnabled and not "does it exist". A check mark that
+        // disagrees with reality is worse than none at all. Costs two schtasks runs before the menu appears.
         // IsEnabled, NOT a bare existence check. The menu and the click handler have to use the
         // same definition: when the menu used existence alone and the handler used the full check,
         // the two disagreed, so every click concluded the display was stale and corrected

@@ -1109,10 +1109,52 @@ internal static class Native
     }
 
     private const uint TOKEN_DUPLICATE = 0x0002, TOKEN_QUERY = 0x0008;
-    private const int TokenIntegrityLevel = 25;
+    private const int TokenIntegrityLevel = 25, TokenElevation = 20;
 
+    /// <summary>
+    /// The integrity level of this process, for the log line that says whether it is elevated. Both facts are
+    /// written down because they can disagree: a token can be high integrity and still not be an elevated
+    /// one, and a log that says only one of them leaves the other to be guessed at.
+    /// </summary>
+    internal static string Integrity() => IntegrityOf(GetCurrentProcess());
+
+    /// <summary>
+    /// Whether this process is running with the elevated token, asked of the token itself.
+    ///
+    /// Not a role check, and the difference was measured rather than argued. A copy Windows started at logon
+    /// on the machine this was written for - a scheduled task with /RL HIGHEST, "highest privileges", the
+    /// whole of the mechanism - was found running at **medium** integrity while
+    /// WindowsPrincipal.IsInRole(Administrator) had said *true* about it. So the check whose only job is to
+    /// stop a copy that cannot work from running told it that it could, and what that copy could do is the
+    /// rest of the evidence: its own windows were fine (the logon advertisement played, which is why it
+    /// looked like it was running), while every window belonging to another process was out of reach - UIPI,
+    /// because the applications on that machine and its shell run at high integrity - and Shell_NotifyIcon
+    /// refused it a tray icon once a second for a minute.
+    ///
+    /// The same role check answers *false* about the shell this was diagnosed from, whose token is high
+    /// integrity but not elevated either. It is not measuring elevation in either direction; TokenElevation
+    /// is, and it is one DWORD.
+    /// </summary>
+    public static bool IsElevated()
+    {
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out IntPtr token)) return false;
+        try
+        {
+            // Any failure to answer reads as "not elevated", which is the safe way round: the caller's
+            // response is to leave, and a copy that cannot prove it has the rights should not be the one
+            // that keeps running.
+            if (!GetTokenInformation(token, TokenElevation, out uint elevated, sizeof(uint), out _)) return false;
+            return elevated != 0;
+        }
+        finally { CloseHandle(token); }
+    }
+
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    // The DWORD form, for TokenElevation: the other declaration in this class takes a buffer.
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(IntPtr token, int what, out uint value, uint size, out uint needed);
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool GetTokenInformation(IntPtr token, int what, IntPtr info, uint size, out uint needed);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
