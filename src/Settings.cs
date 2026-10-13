@@ -435,8 +435,9 @@ internal static class Strings
         ["OpenConfig"]   = ("Open config directory", "打开配置目录"),
         ["AutoStart"]    = ("Start with Windows", "开机自启"),
         // Four characters, because it sits in a column of toggles where the other three are read at a glance -
-        // 动态圆角, 回退动画, 开机自启 - and "窗口关闭动画" was the only one that took a second look. It is the
-        // same switch it always was; the ini's key and the log's name for it are unchanged.
+        // 回退动画, 动态圆角, 开机自启, in the order the menu lists them - and "窗口关闭动画" was the only one
+        // that took a second look. It is the same switch it always was; the ini's key and the log's name for it
+        // are unchanged.
         ["CloseAnim"]    = ("Closing animation", "关闭动画"),
         ["DynamicCorner"] = ("Dynamic corner radius", "动态圆角"),
         // Not named for the desktop any more, which is what made the name long: it covers the taskbar and
@@ -523,7 +524,7 @@ internal static class Strings
              "当前目录已存在其他的文件，确定让程序继续从该目录启动吗？"),
         ["CrowdedAdvice"] =
             ("You can also cancel this run, move the program to a clean folder, and start it there instead.",
-             "您也可以取消本次启动，将本程序移动到一个干净的目录后再继续启动。"),
+             "您也可以取消本次启动，将本程序移动到干净的目录后再启动。"),
         ["ContinueAnyway"] = ("Continue", "继续"),
         ["About"]        = ("About", "关于"),
         ["Version"]      = ("Version", "版本"),

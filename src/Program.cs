@@ -1074,12 +1074,17 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
             (Program.S.CloseAnimation ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuCloseAnim, Strings.T("CloseAnim"));
-        Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
-            (Program.S.DynamicCorner ? Native.MF_CHECKED : Native.MF_UNCHECKED),
-            (IntPtr)Program.MenuDynCorner, Strings.T("DynamicCorner"));
+        // The return animation comes before the corner radius, and that is not the order they were written in:
+        // the entry was appended below the corner one when the feature was added, and asked for above it at the
+        // time. The two are a pair - what a card looks like while it is up, and where it goes when it leaves -
+        // so the one that changes the card's shape at its end is the one that belongs next to the switch that
+        // decides whether it leaves at all.
         Native.AppendMenuW(menu, Native.MF_STRING | returnGroup |
             (Program.S.ReturnToOrigin ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuReturnOrigin, Strings.T("ReturnToOrigin"));
+        Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
+            (Program.S.DynamicCorner ? Native.MF_CHECKED : Native.MF_UNCHECKED),
+            (IntPtr)Program.MenuDynCorner, Strings.T("DynamicCorner"));
 
         // Hidden until it is asked for, and the only entry in this menu that is: an entertainment feature is
         // not something to advertise in a menu. What is under it is the two kinds of advertisement, and what
