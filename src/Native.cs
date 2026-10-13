@@ -63,6 +63,10 @@ internal static class Native
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_CAPTION = 0x00C00000;
 
+    /// <summary>The resizing frame, the same bit WS_MAIN_FRAME counts among a real window's four. A window
+    /// with it can be dragged by its edges and corners; without it, only moved.</summary>
+    public const int WS_THICKFRAME = 0x00040000;
+
     /// <summary>
     /// The four frame bits that a real main window keeps even when it draws its own title bar, and
     /// which a menu, a tooltip, a dropdown or an invisible helper window never has.
@@ -102,6 +106,13 @@ internal static class Native
     public const uint WM_LBUTTONUP = 0x0202;
     public const uint WM_CONTEXTMENU = 0x007B;
     public const uint WM_TRAYICON = 0x0400 + 1;
+
+    /// <summary>The window has been resized, which is what a resizable window's layout hangs off.</summary>
+    public const uint WM_SIZE = 0x0005;
+
+    /// <summary>Asked, before a size change, for the smallest and largest the window may be.</summary>
+    public const uint WM_GETMINMAXINFO = 0x0024;
+    public const int SIZE_MINIMIZED = 1;
     /// <summary>Posted by the animation thread to ask the message loop for one animation frame.</summary>
     public const uint WM_APP_TICK = 0x8000 + 1;
 
@@ -486,6 +497,26 @@ internal static class Native
     public const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_NOMOVE = 0x0002,
                       SWP_SHOWWINDOW = 0x0040;
 
+    /// <summary>
+    /// Moves a window without carrying its old contents across. Without it Windows blits the pixels the window
+    /// had into the shape it now has, which for a control that has just changed size leaves the old drawing
+    /// lying under the new - the artifact that made the blacklist panel's labels and scrollbars show fragments
+    /// of what used to be there while the window was being dragged. See BlacklistPanel.Layout.
+    /// </summary>
+    public const uint SWP_NOCOPYBITS = 0x0100;
+
+    /// <summary>Keeps a child window from drawing over its siblings, which is what a control that has just been
+    /// moved needs while the one next to it is repainting.</summary>
+    public const uint WS_CLIPSIBLINGS = 0x04000000;
+
+    /// <summary>
+    /// Invalidates the whole client area when the window is resized, which is what a window full of controls
+    /// needs so that the background under them is painted again rather than left as it was: a control that has
+    /// moved leaves its old drawing behind otherwise, and nothing in it will repaint that. See
+    /// BlacklistPanel.Register.
+    /// </summary>
+    public const uint CS_HREDRAW = 0x0002, CS_VREDRAW = 0x0001;
+
     /// <summary>Where SetWindowPos puts a window; -1 is "above everything", which an advertisement card is.</summary>
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1), HWND_TOP = IntPtr.Zero;
 
@@ -510,6 +541,38 @@ internal static class Native
         uint clipPrecision, uint quality, uint pitchAndFamily, string face);
 
     public const int COLOR_WINDOW = 5;
+
+    // ---- what the blacklist panel's font measures, and what a window may be dragged to -------------------
+    //
+    // The font itself is not here. It comes from System.Drawing's own reading of the system metrics, which is a
+    // struct this program keeps no copy of - see BlacklistPanel.UiFont for why. What is wanted here is the line
+    // height measured off the font, which is a question for a device context.
+
+    /// <summary>The metrics of the font a device context has selected; Height is the one wanted here.</summary>
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetTextMetricsW(IntPtr dc, out TEXTMETRICW tm);
+
+    // CharSet is spelled out in full, and it is not a style choice: this struct has a field called CharSet of
+    // its own, and inside the declaration it hides the name of the enum the attribute wants.
+    [StructLayout(LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    public struct TEXTMETRICW
+    {
+        public int Height, Ascent, Descent, InternalLeading, ExternalLeading, AveCharWidth, MaxCharWidth;
+        public int Weight, Overhang, DigitizedAspectX, DigitizedAspectY;
+        public ushort FirstChar, LastChar, DefaultChar, BreakChar;
+        public byte Italic, Underlined, StruckOut, PitchAndFamily, CharSet;
+    }
+
+    /// <summary>
+    /// The smallest and largest a window may be dragged to, which is what WM_GETMINMAXINFO is asked for and
+    /// what a resizable window owes the user: without a floor of its own, a window full of controls can be
+    /// dragged until they overlap.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO
+    {
+        public POINT Reserved, MaxSize, MaxPosition, MinTrackSize, MaxTrackSize;
+    }
 
     // ---- the advertisement card's own controls, all of them stock ------------------------------------------
     public const uint WS_CLIPCHILDREN = 0x02000000, BS_PUSHBUTTON = 0x00000000, SS_CENTER = 0x00000001;

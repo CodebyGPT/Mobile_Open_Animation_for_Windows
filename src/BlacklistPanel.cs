@@ -25,6 +25,19 @@
 // windows with it, whether the host is being closed or has crashed. Nothing polls for that, nothing watches
 // for it, and nothing has to be told: it is the same mechanism that makes the tray icon disappear.
 
+// The window is resizable, and the layout is what makes that possible rather than the other way round: every
+// position is a function of the client area it actually has, the rows are as tall as the font it is actually
+// using, and the two lists are the only elastic thing in it - they scroll, and a column of buttons that grew
+// with the window would be a worse tool than one that stayed its size. The floor a user cannot drag it below is
+// that same arithmetic rather than a typed number: see Smallest, which WM_GETMINMAXINFO is answered with.
+//
+// Nothing in the layout is a row height typed into the file. Each one is the line height of the font, which is
+// measured off the font itself (ReFont), plus the padding that turns a line of text into a header, a button or
+// a hint. A machine whose GUI font is bigger, or whose "make text bigger" setting is up, therefore gets a
+// taller panel and rows with room in them, rather than text falling out of a row that was sized on this
+// machine. What that costs is that the numbers are not in this file to be read: they are in the log, one line
+// per session, next to the font they came from.
+
 using System.Runtime.InteropServices;
 
 namespace Moa;
@@ -33,20 +46,31 @@ internal static class BlacklistPanel
 {
     private const string ClassName = "MobileOpenAnimationBlacklist";
 
-    // Logical pixels at 96 DPI, and the client area rather than the window: the window is sized so that this
-    // is exactly what it gets - see FitToWorkArea, which walks the frame back on with AdjustWindowRectEx - so
-    // these are the numbers `cw` and `ch` in Layout are, and the arithmetic there is in these units. The window
-    // is not resizable, so this is the whole of its design; the display's scale and the room on the monitor are
-    // what it is then given, and Layout is where those are dealt with.
-    //
-    // Height was 400 while there was a close button in the bottom right, and is 368 now: 38 less, which is the
-    // row that button and the margin under it took. Nothing else moved when it went, because the last line of
-    // the layout is anchored off this same constant (`ch - (Height - 342)` below) - and that is also why the
-    // window had to be shortened by hand: with the button gone and this still 400, what the client area had at
-    // the bottom was a band of nothing.
-    private const int Width = 820, Height = 368, Pad = 12;
-    private const int ListTop = 32, ListHeight = 268;
-    private const int RowH = 26;
+    /// <summary>
+    /// A title bar with a system menu and a resizing frame, and no place in the taskbar, and clip children: the
+    /// background under the controls is the controls' own business, so this window never paints over them. There
+    /// is no maximize box on purpose: a list of names and a column of buttons has no bigger version that is more
+    /// useful, and the frame is there for the width.
+    /// </summary>
+    private const uint Style = (uint)(Native.WS_CAPTION | Native.WS_SYSMENU | Native.WS_THICKFRAME |
+                                      Native.WS_CLIPCHILDREN);
+
+    /// <summary>
+    /// What every child window is given on top of its own style: do not draw over a sibling. A control that has
+    /// just been moved or resized repaints itself, and without this it can paint into the area of the control
+    /// next to it - which is where the fragments of a scrollbar or of the label beside the right column's title
+    /// came from while the window was being dragged.
+    /// </summary>
+    private const uint ChildStyle = Native.WS_CLIPSIBLINGS;
+
+    // The horizontal design, in 96 DPI units. The vertical one is not here: it is derived from the font, see
+    // Rows - and these three are the ones no font can answer, because a column is as wide as it is useful for
+    // a filename rather than as wide as a letter is tall.
+    private const int Pad = 12;             // the side margins, and the gutter between the two columns
+    private const int Width = 820;          // the width the two columns were designed around
+    private const int MinColumn = 180;      // the narrowest a column may be dragged to and still be readable
+    private const int ListHeight = 268;     // how tall the lists are when there is room for that
+    private const int MinListHeight = 80;   // and the least they may be dragged to
 
     // Buttons, and the two lists, kept in ranges that cannot be confused: the same WM_COMMAND carries a list
     // box's notifications, whose low word is the control's id just as a button's is.
@@ -86,13 +110,102 @@ internal static class BlacklistPanel
     private static IntPtr _font;
 
     /// <summary>
-    /// Where every control goes, worked out rather than typed.
+    /// How tall one line of the panel's font is, in 96 DPI units, measured off the font itself by ReFont. Zero
+    /// until the window has a font, which is before it has controls - so a layout call that finds it zero has
+    /// nothing to place anyway.
+    /// </summary>
+    private static int _line96;
+
+    /// <summary>
+    /// The vertical measurements of the layout, in 96 DPI units, all of them one line of text plus the padding
+    /// that turns it into a row: a header, a button, a hint.
     ///
-    /// The panel is deliberately not resizable - a settings list with a drag corner is a worse tool than one
-    /// that is the right size - and that is exactly why the positions cannot be constants: the same window has
-    /// to suit a 1024-wide display at 100% and a 3840-wide one at 200%, and it has to suit whichever monitor it
-    /// is opened on. So every position is a function of the scale and of the client area it actually got, and
-    /// the two lists are what gives up room when there is less of it - they scroll, the buttons do not.
+    /// This is what "the rows are not typed in" means, and the whole of why a machine whose GUI font is bigger
+    /// gets a taller panel rather than a row of text that does not fit. The paddings are what is left of the
+    /// numbers this file used to hold, and they were chosen against the line height this machine measures -
+    /// fifteen units, from the 9 point face the system's metrics name at 144 dpi - because that is what makes
+    /// the rows come out as the 22, 26 and 20 and the 100 the panel was designed with. On a display at 100% the
+    /// same font measures sixteen, and every row is one unit taller, which is the font's hinting rather than
+    /// this arithmetic: the pixel height of a line is not exactly proportional to the dpi it is set at.
+    /// </summary>
+    private readonly struct Rows
+    {
+        public readonly int Top;        // above the first row
+        public readonly int Header;     // the two labels and the Refresh button
+        public readonly int Label;      // and the labels inside that row, which are shorter than it
+        public readonly int HeaderGap;  // the header row to the lists
+        public readonly int Row;        // the row of four buttons
+        public readonly int RowGap;     // the lists to that row, and that row to the hint below it
+        public readonly int Hint;       // the line under the buttons that says what to do next
+        public readonly int Bottom;     // and the margin under it
+
+        /// <summary>Where the labels sit inside a header row that is three units taller than they are.</summary>
+        public const int LabelDrop = 3;
+
+        public Rows(int line)
+        {
+            Top = 7;
+            Header = line + 7;
+            Label = line + 3;
+            HeaderGap = 3;
+            Row = line + 11;
+            RowGap = 8;
+            Hint = line + 5;
+            Bottom = 6;
+        }
+
+        /// <summary>All of it but the lists: what the window owes the rows that do not stretch.</summary>
+        public int Fixed => Top + Header + HeaderGap + RowGap + Row + RowGap + Hint + Bottom;
+    }
+
+    /// <summary>
+    /// A size in the window's own pixels from one in 96 DPI units, which is the space every number above is in.
+    /// </summary>
+    private static int S(int v, uint dpi) => Native.MulDiv(v, (int)dpi, 96);
+
+    /// <summary>
+    /// A whole window size for a client area of this size: the frame is what this adds, and it is the same
+    /// arithmetic the layout's own sizing needs - see Desired, Smallest and FitToWorkArea.
+    /// </summary>
+    private static void WindowFor(uint dpi, int clientW, int clientH, out int w, out int h)
+    {
+        var frame = new RECT { Right = S(clientW, dpi), Bottom = S(clientH, dpi) };
+        Native.AdjustWindowRectEx(ref frame, Style, false, (uint)Native.WS_EX_TOOLWINDOW);
+        w = frame.Right - frame.Left;
+        h = frame.Bottom - frame.Top;
+    }
+
+    /// <summary>The client area the layout asks for when there is room for all of it.</summary>
+    private static void Desired(uint dpi, out int w, out int h)
+    {
+        var m = new Rows(_line96);
+        w = Math.Max(Width, 3 * Pad + 2 * MinColumn);
+        h = m.Fixed + ListHeight;
+    }
+
+    /// <summary>
+    /// The client area below which the layout stops working: the two columns at their narrowest, and the lists
+    /// at their shortest. This is the floor the user is held to while dragging, and it is the same arithmetic
+    /// rather than a second set of numbers that could drift from it. A monitor too small for even this is
+    /// answered by FitToWorkArea, which goes under it rather than putting the window off the screen.
+    /// </summary>
+    private static void Smallest(uint dpi, out int w, out int h)
+    {
+        var m = new Rows(_line96);
+        w = 3 * Pad + 2 * MinColumn;
+        h = m.Fixed + MinListHeight;
+    }
+
+    /// <summary>
+    /// Where every control goes, worked out rather than typed, from the client area the window actually has and
+    /// the font height the rows come from.
+    ///
+    /// The rows are placed in order, top down, and the lists take what is left. That is the whole of the
+    /// vertical layout, and it is why there is no way for a change to one row to leave a band of nothing at the
+    /// bottom of the window, or to place anything outside it: the middle is the elastic part and everything
+    /// else is a row that follows the one before it. A window too short for the rows gives the lists their
+    /// shortest height and lets the lower rows run off the bottom; the window cannot be dragged that short by
+    /// hand (Smallest is what stops that) and a monitor that small has nowhere better to put it.
     ///
     /// The two lists get the same width, and each column is then built from that one number: an entry in the
     /// left list and a rule in the right one are the same kind of thing, and giving one of them less room said
@@ -100,66 +213,79 @@ internal static class BlacklistPanel
     /// </summary>
     private static void Layout(uint dpi, int clientW, int clientH)
     {
-        int S(int v) => Native.MulDiv(v, (int)dpi, 96);
-
         // Everything below is in 96 DPI units: the client area converted back, so the arithmetic is about the
         // design rather than about pixels.
-        int cw = Math.Max(320, Native.MulDiv(clientW, 96, (int)dpi));
-        int ch = Math.Max(220, Native.MulDiv(clientH, 96, (int)dpi));
+        int cw = Math.Max(3 * Pad + 2 * MinColumn, Native.MulDiv(clientW, 96, (int)dpi));
+        int ch = Math.Max(120, Native.MulDiv(clientH, 96, (int)dpi));
 
-        // Two equal columns and three gaps, which is every pixel of the width spoken for. No floor on the
-        // column: cw is clamped to 320 above, so this is never narrower than 142.
+        var m = new Rows(_line96);
+
+        // Two equal columns and three gaps, which is every pixel of the width spoken for.
         int listW = (cw - 3 * Pad) / 2;
         int rightX = Pad + listW + Pad;
-        int listH = Math.Max(80, ListHeight + (ch - Height));
-        int rowY = ListTop + listH + 8;
         int half = (listW - 8) / 2;
 
         void Place(IntPtr h, int x, int y, int w, int hgt)
         {
+            // No copy-bits: a control that has just changed size must be repainted rather than have its old
+            // pixels stretched into the new shape, which is where the fragments of a scrollbar and of the
+            // labels came from while this window was being dragged. See Native.SWP_NOCOPYBITS.
             if (h != IntPtr.Zero)
-                Native.SetWindowPos(h, IntPtr.Zero, S(x), S(y), S(w), S(hgt),
-                                    Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+                Native.SetWindowPos(h, IntPtr.Zero, S(x, dpi), S(y, dpi), S(w, dpi), S(hgt, dpi),
+                                    Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_NOCOPYBITS);
         }
 
-        Place(_recentLabel, Pad, 10, listW - 110, 18);
-        Place(_refresh, Pad + listW - 100, 7, 100, 22);
-        Place(_ruleLabel, rightX, 10, listW, 18);
-        Place(_recentBox, Pad, ListTop, listW, listH);
-        Place(_rulesBox, rightX, ListTop, listW, listH);
-        Place(_byClass, Pad, rowY, half, RowH);
-        Place(_byProcess, Pad + half + 8, rowY, half, RowH);
-        Place(_toggle, rightX, rowY, half, RowH);
-        Place(_remove, rightX + half + 8, rowY, half, RowH);
-        Place(_empty, Pad, ch - (Height - 342), cw - 2 * Pad, 20);
+        int y = m.Top;
+        Place(_recentLabel, Pad, y + Rows.LabelDrop, listW - 110, m.Label);
+        Place(_refresh, Pad + listW - 100, y, 100, m.Header);
+        Place(_ruleLabel, rightX, y + Rows.LabelDrop, listW, m.Label);
+        y += m.Header + m.HeaderGap;
+
+        // The one elastic row: everything above and below it has a height of its own, so the lists are what
+        // takes a window that is taller or shorter than the design, and they scroll when that is not enough.
+        int listH = Math.Max(MinListHeight, ch - m.Fixed);
+        Place(_recentBox, Pad, y, listW, listH);
+        Place(_rulesBox, rightX, y, listW, listH);
+        y += listH + m.RowGap;
+
+        Place(_byClass, Pad, y, half, m.Row);
+        Place(_byProcess, Pad + half + 8, y, half, m.Row);
+        Place(_toggle, rightX, y, half, m.Row);
+        Place(_remove, rightX + half + 8, y, half, m.Row);
+        y += m.Row + m.RowGap;
+
+        Place(_empty, Pad, y, cw - 2 * Pad, m.Hint);
     }
 
     /// <summary>
-    /// Sizes the window for this display and this monitor: the designed size at the display's scale, and where
-    /// that does not fit the monitor's usable area, less than that - the layout then gives the missing height
-    /// to the two lists, which can scroll, rather than to the buttons, which cannot.
+    /// Sizes the window for this display and this monitor: the size the layout asks for at the display's scale,
+    /// and where that does not fit the monitor's usable area, less than that - the layout then gives the missing
+    /// height to the two lists, which can scroll, rather than to the buttons, which cannot.
+    ///
+    /// The floor here is the layout's own, not this method's: a monitor that cannot hold even that gets a window
+    /// that is too small, which is better than a window with part of it off the screen.
     /// </summary>
-    private static void FitToWorkArea(uint style, uint dpi, RECT work)
+    private static void FitToWorkArea(uint dpi, RECT work)
     {
-        const uint ExStyle = (uint)Native.WS_EX_TOOLWINDOW;
-        int S(int v) => Native.MulDiv(v, (int)dpi, 96);
         int availW = work.Right - work.Left, availH = work.Bottom - work.Top;
+        Desired(dpi, out int cw, out int ch);                 // in 96 DPI units, like everything else here
+        WindowFor(dpi, cw, ch, out int ww, out int wh);
 
-        var frame = new RECT { Right = S(Width), Bottom = S(Height) };
-        Native.AdjustWindowRectEx(ref frame, style, false, ExStyle);
-        int overW = Math.Max(0, (frame.Right - frame.Left) - availW);
-        int overH = Math.Max(0, (frame.Bottom - frame.Top) - availH);
+        // What is over the monitor, worked out on the window sizes and then given back in design units, because
+        // reducing the client area by a number of pixels is not the same as reducing it by the frame's worth of
+        // those pixels as well.
+        int overW = Math.Max(0, ww - availW), overH = Math.Max(0, wh - availH);
         if (overW > 0 || overH > 0)
         {
-            frame = new RECT { Right = Math.Max(240, S(Width) - overW),
-                               Bottom = Math.Max(180, S(Height) - overH) };
-            Native.AdjustWindowRectEx(ref frame, style, false, ExStyle);
+            Smallest(dpi, out int minW, out int minH);
+            cw = Math.Max(minW, cw - Native.MulDiv(overW, 96, (int)dpi));
+            ch = Math.Max(minH, ch - Native.MulDiv(overH, 96, (int)dpi));
+            WindowFor(dpi, cw, ch, out ww, out wh);
         }
 
-        int ww = frame.Right - frame.Left, wh = frame.Bottom - frame.Top;
         Native.SetWindowPos(_hwnd, IntPtr.Zero,
                             work.Left + (availW - ww) / 2, work.Top + (availH - wh) / 2, ww, wh,
-                            Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+                            Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_NOCOPYBITS);
     }
 
     /// <summary>
@@ -173,20 +299,103 @@ internal static class BlacklistPanel
     }
 
     /// <summary>
-    /// A font for this display's scale, sent to every control. The stock GUI font would be the size 96 DPI
-    /// asked for, which is visibly too small on a scaled display - and being per monitor aware, this program
-    /// knows better. Called again when the window moves to a monitor at another scale.
+    /// The font every control is given, and the one measurement the layout is built from: the line height it
+    /// comes out as.
+    ///
+    /// The face, the weight and the point size come from System.Drawing's own reading of the system metrics -
+    /// SystemFonts.MessageBoxFont - rather than from a struct of this program's. The call behind it is one whose
+    /// layout has changed with Windows and whose failure mode is a font that is not the one asked for; .NET
+    /// already has that right, so this file does not keep a second copy of it. Its answer is a font at the dpi
+    /// the process runs at, which is the system's, and the size is scaled from there to the display this window
+    /// is on - that is the whole of the per-monitor part, and the probe measures both ends of it.
+    ///
+    /// The handle is made here rather than taken from that font, because a handle out of a Font object raises a
+    /// question about who deletes it, and this one is this file's to delete. What the font metrics are is then
+    /// measured off the handle, since a font's own idea of how tall its lines are is not its size.
+    ///
+    /// The fallback is the face and size this file asked for before the font came from the system, for a machine
+    /// where the call throws. Losing the font entirely would lose the layout with it.
     /// </summary>
     private static void ReFont(uint dpi)
     {
-        IntPtr font = Native.CreateFontW(-Native.MulDiv(9, (int)dpi, 72), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0,
-                                         "Segoe UI");
+        IntPtr font = UiFont(dpi, out int line96);
         if (font == IntPtr.Zero) return;
+        _line96 = line96;
         IntPtr old = _font;
         _font = font;
         foreach (var c in AllControls())
             if (c != IntPtr.Zero) Native.SendMessageW(c, Native.WM_SETFONT, font, (IntPtr)1);
         if (old != IntPtr.Zero) Native.DeleteObject(old);
+    }
+
+    private static IntPtr UiFont(uint dpi, out int line96)
+    {
+        line96 = 0;
+        int system = (int)Native.GetDpiForSystem();
+        if (system <= 0) system = 96;
+
+        try
+        {
+            using var ui = System.Drawing.SystemFonts.MessageBoxFont;
+            // The system's font is expressed in the process's own dpi; this window may be on a display at
+            // another one. Both the size in points and the height in pixels come out of the same arithmetic, so
+            // the font is its size at this display rather than its pixels at another.
+            double points = ui.SizeInPoints * dpi / system;
+            _fontFace = ui.Name;
+            _fontPoints = points;
+            IntPtr made = Native.CreateFontW(-(int)Math.Round(points * dpi / 72.0), 0, 0, 0,
+                                             ui.Bold ? 700 : 400, ui.Italic ? 1u : 0u, 0, 0, ui.GdiCharSet,
+                                             0, 0, 0, 0, _fontFace);
+            line96 = LineOf(made, dpi);
+            if (line96 > 0) return made;
+            if (made != IntPtr.Zero) Native.DeleteObject(made);
+            Log.Write("blacklist panel: the system font made no line height; asking for one instead");
+        }
+        catch (Exception e)
+        {
+            Log.Write($"blacklist panel: the system font could not be read ({e.GetType().Name}); asking for one");
+        }
+
+        _fontFace = "Segoe UI";
+        _fontPoints = 9.0 * dpi / 96;
+        IntPtr font = Native.CreateFontW(-Native.MulDiv(9, (int)dpi, 72), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0,
+                                        _fontFace);
+        line96 = LineOf(font, dpi);
+        return line96 > 0 ? font : IntPtr.Zero;
+    }
+
+    /// <summary>The face and the point size the font was made at, for the log and the log only.</summary>
+    private static string _fontFace = "";
+    private static double _fontPoints;
+
+    /// <summary>
+    /// How tall one line of this font is, in 96 DPI units: the character cell plus the leading the font asks
+    /// for, which together are what a row of text takes. Measured on a screen device context, because what a
+    /// font's metrics are is a question for a device context and there is one of those on every machine.
+    /// </summary>
+    private static int LineOf(IntPtr font, uint dpi)
+    {
+        if (font == IntPtr.Zero) return 0;
+        IntPtr dc = Native.GetDC(IntPtr.Zero);
+        if (dc == IntPtr.Zero) return 0;
+        IntPtr old = Native.SelectObject(dc, font);
+        bool read = Native.GetTextMetricsW(dc, out var tm);
+        if (old != IntPtr.Zero) Native.SelectObject(dc, old);
+        Native.ReleaseDC(IntPtr.Zero, dc);
+        int px = read ? tm.Height + tm.ExternalLeading : 0;
+        return px <= 0 ? 0 : Native.MulDiv(px, 96, (int)dpi);
+    }
+
+    /// <summary>
+    /// Lays the window out again for the client area it has now, which is what a resize and a move to a monitor
+    /// at another scale both end up asking for.
+    /// </summary>
+    private static void Relayout(IntPtr hwnd)
+    {
+        uint dpi = Native.GetDpiForWindow(hwnd);
+        if (dpi == 0) dpi = Native.GetDpiForSystem();
+        Native.GetClientRect(hwnd, out var client);
+        Layout(dpi, client.Right - client.Left, client.Bottom - client.Top);
     }
 
     /// <summary>
@@ -224,9 +433,10 @@ internal static class BlacklistPanel
         Native.GetCursorPos(out var cursor);
         var work = WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
 
-        uint style = (uint)(Native.WS_CAPTION | Native.WS_SYSMENU | Native.WS_BORDER);
-        int x = work.Left + ((work.Right - work.Left) - Width) / 2;
-        int y = work.Top + ((work.Bottom - work.Top) - Height) / 2;
+        // Created hidden, at the corner of that monitor and square: not one of those four numbers survives, and
+        // they are only here because a window has to be created at some size. It is not shown until after
+        // FitToWorkArea, which cannot run until the window exists - asking a window about its display and its
+        // font is the whole of how the size is worked out.
         // Owned by the tray host, and that one argument is the whole of the panel's lifetime binding. Windows
         // destroys an owner's owned windows when it destroys the owner, so the panel cannot outlive the program:
         // nothing here notices anything, nothing polls, and a program that is killed outright takes its windows
@@ -234,22 +444,25 @@ internal static class BlacklistPanel
         // asked "is the tray window still there" twice a second, which was a way of finding out something the
         // system already knew and could have been told for free.
         _hwnd = Native.CreateWindowExW((uint)Native.WS_EX_TOOLWINDOW, ClassName, Strings.T("Blacklist"),
-            style, x, y, Width, Height, _tray, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
+            Style, work.Left, work.Top, Width, Width, _tray, IntPtr.Zero, Native.GetModuleHandleW(null),
+            IntPtr.Zero);
         if (_hwnd == IntPtr.Zero) return;
 
-        // The window's own scale, asked after it exists because that is the only moment the answer is about
-        // the display this window is actually on. FitToWorkArea then sizes it for that scale and that screen,
-        // and the client area it ends up with is what the layout is built from.
+        // The window's own scale, asked after it exists because that is the only moment the answer is about the
+        // display this window is actually on. The font comes first, because the rows of the layout are made of
+        // its line height and the size the window wants is the sum of those rows; then FitToWorkArea sizes it
+        // for that scale and that screen, and the client area it ends up with is what the layout is built from.
         uint dpi = Native.GetDpiForWindow(_hwnd);
         if (dpi == 0) dpi = Native.GetDpiForSystem();
-        FitToWorkArea(style, dpi, work);
+        ReFont(dpi);
+        FitToWorkArea(dpi, work);
         Native.GetClientRect(_hwnd, out var client);
         int cw = client.Right - client.Left, ch = client.Bottom - client.Top;
 
         uint ListStyle() => Native.WS_CHILD | Native.WS_VISIBLE | Native.WS_BORDER | Native.WS_VSCROLL |
                             Native.WS_HSCROLL | Native.WS_TABSTOP | Native.LBS_NOTIFY |
-                            Native.LBS_NOINTEGRALHEIGHT;
-        uint BtnStyle() => Native.WS_CHILD | Native.WS_VISIBLE | Native.WS_TABSTOP;
+                            Native.LBS_NOINTEGRALHEIGHT | ChildStyle;
+        uint BtnStyle() => Native.WS_CHILD | Native.WS_VISIBLE | Native.WS_TABSTOP | ChildStyle;
 
         IntPtr Make(string cls, uint st, int cx, int cy, int cw2, int ch2, int id, string text)
         {
@@ -260,11 +473,10 @@ internal static class BlacklistPanel
             return c;
         }
 
-        ReFont(dpi);   // first, so that the controls created below are made with it
-        _recentLabel = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE, 0, 0, 0, 0, -1,
+        _recentLabel = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE | ChildStyle, 0, 0, 0, 0, -1,
                             Strings.T("BlacklistRecent"));
         _refresh = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdRefresh, Strings.T("BlacklistRefresh"));
-        _ruleLabel = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE, 0, 0, 0, 0, -1,
+        _ruleLabel = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE | ChildStyle, 0, 0, 0, 0, -1,
                           Strings.T("BlacklistEntries"));
         _recentBox = Make("LISTBOX", ListStyle(), 0, 0, 0, 0, IdRecent, "");
         _rulesBox = Make("LISTBOX", ListStyle(), 0, 0, 0, 0, IdRules, "");
@@ -272,7 +484,7 @@ internal static class BlacklistPanel
         _byProcess = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdByProcess, Strings.T("BlacklistByProcess"));
         _toggle = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdToggle, Strings.T("BlacklistToggle"));
         _remove = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdRemove, Strings.T("BlacklistRemove"));
-        _empty = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE, 0, 0, 0, 0, -1, "");
+        _empty = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE | ChildStyle, 0, 0, 0, 0, -1, "");
 
         Layout(dpi, cw, ch);
         // Before ShowWindow, because uxtheme does not restyle a window it has already shown: a control has to
@@ -295,6 +507,16 @@ internal static class BlacklistPanel
         // too large or cut off has to be read against, and they are what the arithmetic was checked with.
         Log.Write($"blacklist panel: layout at {dpi} dpi from client {cw}x{ch} " +
                   $"(logical {Native.MulDiv(cw, 96, (int)dpi)}x{Native.MulDiv(ch, 96, (int)dpi)})");
+        // And where those numbers came from. The rows are not in the source any more - they are a line of the
+        // font plus padding - so the font and the line height it measured as are the two numbers that say
+        // whether the panel on screen is the panel the layout meant, and they are the ones to read when a
+        // machine's text size or GUI font makes it look wrong. The window's own floor is on the same line.
+        var rows = new Rows(_line96);
+        Smallest(dpi, out int minW, out int minH);
+        WindowFor(dpi, minW, minH, out int minTrackW, out int minTrackH);
+        Log.Write($"blacklist panel: rows from a {_line96} unit line (header {rows.Header}, label {rows.Label}, " +
+                  $"button {rows.Row}, hint {rows.Hint}, all of it but the lists {rows.Fixed}), " +
+                  $"font \"{_fontFace}\" {_fontPoints:0.#} pt at {dpi} dpi, smallest drag {minTrackW}x{minTrackH} px");
         // And that is all: the window is up and this returns. It used to wait here, in a loop of its own, until
         // the panel was closed - see the note at the top of the file for what that cost. The program's loop is
         // the only one now, and it reaches the panel through IsDialogMessage the same way this loop did.
@@ -617,6 +839,10 @@ internal static class BlacklistPanel
         var wc = new WNDCLASSEXW
         {
             CbSize = (uint)Marshal.SizeOf<WNDCLASSEXW>(),
+            // Redraw the whole client area on a resize: this window is full of controls that move and change
+            // size with it, and each of them repaints only itself. Without this the background they left behind
+            // is never painted again, which is the other half of the fragments a resize used to leave.
+            Style = Native.CS_HREDRAW | Native.CS_VREDRAW,
             LpfnWndProc = Marshal.GetFunctionPointerForDelegate(_proc),
             HInstance = Native.GetModuleHandleW(null),
             HbrBackground = (IntPtr)(Native.COLOR_WINDOW + 1),
@@ -635,6 +861,34 @@ internal static class BlacklistPanel
             case Native.WM_COMMAND:
                 OnCommand((int)(w.ToInt64() & 0xFFFF), (int)((w.ToInt64() >> 16) & 0xFFFF));
                 return IntPtr.Zero;
+
+            case Native.WM_SIZE:
+                // Dragged to another size, or given one by FitToWorkArea. Not while minimized: a minimized
+                // window is zero by zero and laying the controls out at that size would be work for nothing.
+                if (w.ToInt64() != Native.SIZE_MINIMIZED) Relayout(hwnd);
+                return IntPtr.Zero;
+
+            case Native.WM_GETMINMAXINFO:
+            {
+                // How small the user may drag it, from the layout's own arithmetic: the rows at the height of the
+                // font this window has, and the lists at their shortest. Not sent before the font is made (the
+                // window is created before it has one), and there is nothing to answer with until then.
+                if (_line96 <= 0) return Native.DefWindowProcW(hwnd, msg, w, l);
+                uint dpi = Native.GetDpiForWindow(hwnd);
+                if (dpi == 0) dpi = Native.GetDpiForSystem();
+                Smallest(dpi, out int minW, out int minH);
+                WindowFor(dpi, minW, minH, out int minTrackW, out int minTrackH);
+                // And how large: the display this window is on, less its taskbar. Left to Windows, the cap is
+                // about the primary display, and a window on a bigger monitor would stop growing at the wrong
+                // one. The monitor is asked for rather than remembered, because the window can be dragged to
+                // another one between two drags of its corner.
+                var mm = Marshal.PtrToStructure<Native.MINMAXINFO>(l);
+                mm.MinTrackSize = new POINT { X = minTrackW, Y = minTrackH };
+                var work = WorkAreaOf(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST));
+                mm.MaxTrackSize = new POINT { X = work.Right - work.Left, Y = work.Bottom - work.Top };
+                Marshal.StructureToPtr(mm, l, false);
+                return IntPtr.Zero;
+            }
 
             case Native.WM_SETTINGCHANGE:
             {
@@ -675,12 +929,11 @@ internal static class BlacklistPanel
                                     Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
                 if (newDpi == 0) newDpi = Native.GetDpiForWindow(hwnd);
                 ReFont(newDpi);
-                Native.GetClientRect(hwnd, out var client);
-                Layout(newDpi, client.Right - client.Left, client.Bottom - client.Top);
+                Relayout(hwnd);
                 // Re-adding the rows is what makes the list boxes measure their items again at the new scale,
                 // which they do from the font and not from anything this file passes them.
                 Fill();
-                Log.Write($"blacklist panel: moved to a display at {newDpi} dpi");
+                Log.Write($"blacklist panel: moved to a display at {newDpi} dpi, line {_line96} units");
                 return IntPtr.Zero;
             }
 
