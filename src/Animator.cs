@@ -27,6 +27,16 @@ internal sealed class Animator
         public required WindowInfo Target;
         public required Panel Panel;
         public long Started, Duration;
+        /// <summary>
+        /// Where the card grows from and returns to, as the <em>centre</em> of the start square rather than its
+        /// top-left corner - which is what the upstream mod's StartRect takes (a square of edge size centred on
+        /// the anchor) and what a click point is: the point the user clicked, with the card around it.
+        ///
+        /// This was the top-left corner in this rewrite at first, and only the fallback path was adjusted for
+        /// it, so a card opened by a click hung down and right of the cursor instead of growing out of it, and
+        /// closed back to the same off-centre square. The two ends agreed with each other, which is why nothing
+        /// caught it: see RequestGrowFrame and OnWindowClosed, where the corner is now derived in one place.
+        /// </summary>
         public int AnchorX, AnchorY, StartSize;
         /// <summary>
         /// The card is growing out of a click rather than in place, so there is somewhere for a closing
@@ -98,8 +108,8 @@ internal sealed class Animator
     /// seen to return somewhere it never came from. Only windows opened from the desktop or the taskbar
     /// are recorded at all; see RememberOrigin for why the mechanism is deliberately not global.
     ///
-    /// The start square is stored exactly as the opening animation used it (its top-left corner and its
-    /// side), not as the settings and the DPI would compute it now: landing where the opening started is
+    /// The start square is stored exactly as the opening animation used it (its centre and its side), not as
+    /// the settings and the DPI would compute it now: landing where the opening started is
     /// a fact about that moment, and a resize or a settings change in between must not move it. For the
     /// same reason the DPI the window had is stored with it and compared before the record is used.
     ///
@@ -523,23 +533,40 @@ internal sealed class Animator
     }
 
     /// <summary>
-    /// Where an in-place card grows from: the middle of the window, less half the start square. The same thing
-    /// the upstream mod calls its fallback - "window centre (fallback when there is no click position)" - in the
-    /// coordinates a frame is drawn in, where the anchor is the top-left of the start square rather than a point
-    /// in the middle of anything.
+    /// Where an in-place card grows from: the middle of the window. The same thing the upstream mod calls its
+    /// fallback - "window centre (fallback when there is no click position)" - and the same shape of answer: a
+    /// point, which the card is then drawn around.
+    ///
+    /// The start square is not built here, because where it goes is not a fact about the window: it is the
+    /// centre, and the square is centred on the centre a few lines further on, in the one place that turns an
+    /// anchor into a rectangle. It used to be built here - the middle less half the square, because the anchor
+    /// was the square's corner - and that was the bug rather than the design: with the corner as the anchor, a
+    /// click opened a card that hung down and right of the cursor, and only this path was compensated. See
+    /// Anim.AnchorX.
     ///
     /// Shared with probe/panel, which puts the two rectangles from a real report through it: an mpv window that
     /// appeared as 202x100 at (190,190) and was 1330x793 at (615,373) by the end of the same grow.
     /// </summary>
-    internal static POINT InPlaceAnchor(RECT target, int startSize)
-    {
-        int half = startSize / 2;
-        return new POINT
+    internal static POINT InPlaceAnchor(RECT target)
+        => new POINT
         {
-            X = target.Left + (target.Right - target.Left) / 2 - half,
-            Y = target.Top + (target.Bottom - target.Top) / 2 - half,
+            X = target.Left + (target.Right - target.Left) / 2,
+            Y = target.Top + (target.Bottom - target.Top) / 2,
         };
-    }
+
+    /// <summary>
+    /// The corner of the start square that is centred on this anchor.
+    ///
+    /// It exists because the two have been confused more than once, and always the same way: an anchor is a
+    /// point with the card around it, a rectangle is a corner with the card below and right of it, and a piece
+    /// of code that takes one for the other is wrong by half a card in both axes while still looking
+    /// self-consistent - the opening and the closing agree with each other, because they make the same mistake.
+    /// It is the same mistake a user reported as "the card is not centred on my click". So the conversion is
+    /// here, once, and the three places that need a rectangle call it: the first frame of a grow, the panel's
+    /// window as it is created, and where a closing card is sent back to. probe/panel checks it directly.
+    /// </summary>
+    internal static POINT CornerOf(POINT anchor, int size)
+        => new POINT { X = anchor.X - size / 2, Y = anchor.Y - size / 2 };
 
     /// <summary>
     /// Asks the animation thread for the frame this moment's geometry calls for, and answers how far through
@@ -568,7 +595,7 @@ internal sealed class Animator
         // the window is", so it is asked again rather than remembered.
         if (a.AnchorFollowsWindow)
         {
-            var at = InPlaceAnchor(tgt, a.StartSize);
+            var at = InPlaceAnchor(tgt);
             if (!a.AnchorFollowed && (at.X != a.AnchorX || at.Y != a.AnchorY))
             {
                 a.AnchorFollowed = true;
@@ -577,8 +604,14 @@ internal sealed class Animator
             }
             a.AnchorX = at.X; a.AnchorY = at.Y;
         }
-        int x = (int)Math.Round(a.AnchorX + (tgt.Left - a.AnchorX) * e);
-        int y = (int)Math.Round(a.AnchorY + (tgt.Top - a.AnchorY) * e);
+        // The anchor is the centre of the card, so the corner it starts from is half a card up and to the left
+        // of it - and this is the only place in the grow that is worked out. Everything else here is a
+        // rectangle: the panel's window is created at a corner, and the interpolation below walks between two
+        // corners. See CornerOf.
+        var corner = CornerOf(new POINT { X = a.AnchorX, Y = a.AnchorY }, a.StartSize);
+        int fromX = corner.X, fromY = corner.Y;
+        int x = (int)Math.Round(fromX + (tgt.Left - fromX) * e);
+        int y = (int)Math.Round(fromY + (tgt.Top - fromY) * e);
         int w = (int)Math.Round(a.StartSize + (tw - a.StartSize) * e);
         int h = (int)Math.Round(a.StartSize + (th - a.StartSize) * e);
         // The corner is interpolated along the card's own curve, which is what the mod does
@@ -630,8 +663,7 @@ internal sealed class Animator
             VH = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN),
         };
         Log.Write($"hwnd={a.Target.Hwnd} origin remembered: {a.AnchorX},{a.AnchorY} size {a.StartSize}" +
-                  $" (pid {a.Target.Pid}); closing it will come back here");
-    }
+                  $" (pid {a.Target.Pid}); closing it will come back here");    }
 
     /// <summary>True when the display still has the shape an Origin was written under.</summary>
     private static bool SameDisplay(Origin o) =>
@@ -839,18 +871,22 @@ internal sealed class Animator
             bool ours = origin.Pid == w.Pid;
             bool sameDisplay = SameDisplay(origin);
             bool sameDpi = dpiReadable == 0 || origin.DpiAtOpen == 0 || dpiReadable == origin.DpiAtOpen;
-            // The point asked about is the remembered one itself - the click, which is also the corner the
-            // card collapses into. Not the centre of the square: a click near an edge puts that centre off
-            // the screen altogether (a taskbar is 60 pixels tall and the square is 144), and a point that
-            // is not on any screen has nothing in front of it either, which would read as "covered" and
-            // refuse the taskbar's own launches.
+            // The point asked about is the remembered anchor itself, and it is the one point of the square that
+            // is certainly on a screen: a click on the taskbar is on a 60 pixel strip, and a 144 pixel square
+            // around it reaches below the bottom of the display. Asking about a corner of the square instead
+            // would read as "covered" for every launch from the taskbar and refuse it - see FrontmostClassAt.
             var anchor = new POINT { X = origin.X, Y = origin.Y };
             string front = FrontmostClassAt(anchor, w.Hwnd, out string underPointer);
             bool exposed = ClickTracker.SurfaceOfClass(front) == origin.Surface;
 
             if (_s.ReturnToOrigin && ours && sameDisplay && sameDpi && exposed)
             {
-                endX = origin.X; endY = origin.Y; endSize = origin.Size;
+                // The card is centred on the remembered point, so the rectangle it ends in is that point taken
+                // half a square up and to the left - the same corner the opening animation drew its first frame
+                // at, which is what makes a window closing the exact reverse of it opening.
+                var corner = CornerOf(new POINT { X = origin.X, Y = origin.Y }, origin.Size);
+                endX = corner.X; endY = corner.Y;
+                endSize = origin.Size;
                 dest = $"back to the launch point {origin.X},{origin.Y} (front={front})";
             }
             else if (_s.ReturnToOrigin && ours)
@@ -966,11 +1002,10 @@ internal sealed class Animator
         else
         {
             inPlace = true;
-            pt = new POINT
+            pt = InPlaceAnchor(new RECT
             {
-                X = w.X + w.Width / 2 - _s.StartSizePx / 2,
-                Y = w.Y + w.Height / 2 - _s.StartSizePx / 2,
-            };
+                Left = w.X, Top = w.Y, Right = w.X + w.Width, Bottom = w.Y + w.Height,
+            });
             // Which of the two refused is worth saying: a dialog is the user answering a question, and
             // "no Enter has been pressed" over the top of that would send whoever reads the log looking for a
             // keyboard that was never involved.
@@ -978,12 +1013,12 @@ internal sealed class Animator
                 ? $"the click at {ClickTracker.LastX},{ClickTracker.LastY} landed on a dialog " +
                   $"({ClickTracker.LastSurfaceClass}), which is an answer rather than a launch point"
                 : KeyTracker.LastReason;
-            // The point is what the panel window is made at and nothing more: this anchor is not a place the
-            // user chose, it is the window's own middle, and that is taken again for each frame - see
-            // Anim.AnchorFollowsWindow and InPlaceAnchor. The two agree whenever the window is still where it
-            // appeared, which is most windows; the ones they disagree about are the ones this exists for.
-            Log.Write($"  -> anchor: nothing to grow from ({why}); in place, from the window's own middle " +
-                      $"(first taken at {pt.X},{pt.Y}, and followed if the window moves)");
+            // The point is the window's own middle and nothing more: it is not a place the user chose, and it
+            // is taken again for each frame because the window is allowed to move - see Anim.AnchorFollowsWindow
+            // and InPlaceAnchor. Followed or not, the card is centred on it, which is what makes the two agree
+            // whenever the window is still where it appeared.
+            Log.Write($"  -> anchor: nothing to grow from ({why}); in place, the window's own middle " +
+                      $"at {pt.X},{pt.Y}, taken again if the window moves");
         }
 
         if (!_guard.Hide(w.Hwnd)) { Log.Write("  -> Hide() declined; nothing animated"); return; }
@@ -1045,17 +1080,10 @@ internal sealed class Animator
         // which monitor the window was on.
         int startSize = Native.MulDiv(_s.StartSizePx, dpi, 96);
 
-        // The anchor was worked out before the hide, and there is no room for a DPI query there -
-        // that is the path where a stalled millisecond costs a window. In the in-place case the
-        // anchor is the *top-left* of the start square, so it was placed using the unscaled size and
-        // has to be nudged by half the difference to stay centred on the window. The click and
-        // keyboard cases need no nudge: there the anchor is a point that was on the screen.
-        if (inPlace)
-        {
-            int nudge = (startSize - _s.StartSizePx) / 2;
-            pt = new POINT { X = pt.X - nudge, Y = pt.Y - nudge };
-        }
-
+        // The anchor is the centre of the start square and needs no nudge for the scaled size, which is what
+        // the nudge that used to be here was for: it existed to keep a *corner* centred on the window after the
+        // start size changed with the DPI, and a centre does not move when the thing around it is resized. The
+        // work of turning it into a corner is done in RequestGrowFrame, which is also the only thing that cares.
         int targetRadius = Native.IsWindows11 ? Native.MulDiv(8, dpi, 96) : 0;
         // Half the start square, which is the roundest that square can be: at this size the card is a
         // disc, and it squares off into the window's own corner as it grows. This used to be 22 per cent
@@ -1075,8 +1103,14 @@ internal sealed class Animator
         // The panel window is created on the animation thread, not here. This thread only asks for
         // it and gets straight on with the next event; if creation fails, Panel.Failed is set and
         // Tick releases the window through the normal path.
-        var panel = _thread.Attach(w, startSize, startRadius, pt.X, pt.Y, 0, 0, 0);
-        Log.Write($"  -> panel requested, from {pt.X},{pt.Y} size {startSize} radius {startRadius}->{targetRadius} (dpi {dpi}, setting {_s.StartSizePx})");
+        //
+        // And what the thread is handed is a corner rather than the anchor: a window is created at a
+        // top-left, and a panel's own first frame is that rectangle. Half the square, because the anchor is the
+        // middle of it - see Anim.AnchorX.
+        var corner = CornerOf(pt, startSize);
+        var panel = _thread.Attach(w, startSize, startRadius, corner.X, corner.Y, 0, 0, 0);
+        Log.Write($"  -> panel requested, centred on {pt.X},{pt.Y} at {corner.X},{corner.Y}, size {startSize} " +
+                  $"radius {startRadius}->{targetRadius} (dpi {dpi}, setting {_s.StartSizePx})");
 
         _active.Add(new Anim
         {
