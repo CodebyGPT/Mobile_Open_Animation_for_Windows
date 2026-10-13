@@ -490,13 +490,10 @@ internal static class Strings
              "无法修改开机自启设置，已保持原状。\n\n" +
              "它是你自己注册表里的一个值：运行 regedit，位置在 " +
              "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run。"),
-        ["AdminRequired"] =
-            ("Mobile Open Animation for Windows must run as an administrator.\n\n" +
-             "Without it, Windows' user interface privilege isolation stops this program from\n" +
-             "hiding the windows of most applications, so nothing would animate.",
-             "Mobile Open Animation for Windows 必须以管理员身份运行。\n\n" +
-             "否则 Windows 的用户界面特权隔离(UIPI)会阻止它隐藏大多数程序的窗口，\n" +
-             "动画将完全不会生效。"),
+        // There is deliberately no string for "this must run as an administrator". A copy that is not elevated
+        // leaves without a word - see Program.Run - so there is nothing left for a string to say, and the one
+        // that was here is what made a launch Windows makes at logon sit there invisibly waiting to be
+        // answered.
         // The question asked at the first start in a folder that already has things in it, the title it is asked
         // under, and the two answers to it. The title names the situation rather than the program: the question is
         // about the folder, and "Mobile Open Animation for Windows" over it would be the tray tooltip, not a

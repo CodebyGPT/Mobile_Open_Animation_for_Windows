@@ -192,13 +192,20 @@ internal static class Program
             return 0;
         }
 
-        // Required, not optional. The manifest asks Windows to elevate before the process starts;
-        // this is the belt to that braces, and it is what a launch that bypassed the manifest gets
-        // instead of silently animating nothing.
+        // Required, not optional. The manifest asks Windows to elevate before the process starts; this is the
+        // belt to that braces, and it is what a launch that bypassed the manifest gets instead of silently
+        // animating nothing.
+        //
+        // Nothing is asked and nothing is shown: a copy that is not elevated cannot do the one thing this
+        // program is - hiding other processes' windows is exactly what UIPI refuses - so there is nothing to
+        // decide and nobody to tell. The message box this used to put up was worse than useless, because the
+        // launch it matters for is the one Windows makes at logon: it appeared on a desktop nobody was looking
+        // at and the process sat there waiting to be answered, which is a program that is running with no tray
+        // icon and no animation and can only be killed from Task Manager. The line is written first, so that
+        // the next time this happens the log says which launch it was.
         if (!IsElevated())
         {
-            Native.MessageBoxW(IntPtr.Zero, Strings.T("AdminRequired"),
-                               "Mobile Open Animation for Windows", 0x00000030 /* MB_ICONWARNING */);
+            Log.Write("not elevated: this copy cannot hide other processes' windows, so it is leaving");
             return 1;
         }
 
