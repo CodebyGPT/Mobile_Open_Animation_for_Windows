@@ -14,10 +14,16 @@
 // buttons asking which one the user meant, and leave the window showing two highlighted rows at once, which is
 // what it did before this: whichever row was clicked last decides, and the other list is cleared.
 //
-// Modal, with a message loop of its own: the tray host's loop is on this same thread, so a nested loop keeps
-// the tray - and the animation, which is the thing the user is watching - alive while the panel is up, and it
-// avoids keeping an "is it open" state in a program that otherwise has none. The panel is a tool window, so it
-// takes no place in the taskbar for the minute it is open.
+// The panel is a tool window, so it takes no place in the taskbar for the minute it is open, and it lives in
+// the program's own message loop like any other window - there is no loop of its own and nothing nests, which
+// is the whole of why Show may be called at any time and from anywhere. The keyboard rules a window full of
+// controls expects - Tab between them, the arrows inside a list, Esc - are applied by that loop; see
+// IsDialogMessage.
+//
+// What closes it is the user and nothing else: the title bar's X, and the program going away. The program
+// going away is not code - the panel's owner is the tray host's window, and Windows destroys an owner's owned
+// windows with it, whether the host is being closed or has crashed. Nothing polls for that, nothing watches
+// for it, and nothing has to be told: it is the same mechanism that makes the tray icon disappear.
 
 using System.Runtime.InteropServices;
 
@@ -27,17 +33,29 @@ internal static class BlacklistPanel
 {
     private const string ClassName = "MobileOpenAnimationBlacklist";
 
-    // Logical pixels at 96 DPI. The window is not resizable, so these are what the layout is designed
-    // around; what it is actually given is a function of the display's scale and of how much of the monitor
-    // is usable, see Layout.
-    private const int Width = 820, Height = 400, Pad = 12;
+    // Logical pixels at 96 DPI, and the client area rather than the window: the window is sized so that this
+    // is exactly what it gets - see FitToWorkArea, which walks the frame back on with AdjustWindowRectEx - so
+    // these are the numbers `cw` and `ch` in Layout are, and the arithmetic there is in these units. The window
+    // is not resizable, so this is the whole of its design; the display's scale and the room on the monitor are
+    // what it is then given, and Layout is where those are dealt with.
+    //
+    // Height was 400 while there was a close button in the bottom right, and is 368 now: 38 less, which is the
+    // row that button and the margin under it took. Nothing else moved when it went, because the last line of
+    // the layout is anchored off this same constant (`ch - (Height - 342)` below) - and that is also why the
+    // window had to be shortened by hand: with the button gone and this still 400, what the client area had at
+    // the bottom was a band of nothing.
+    private const int Width = 820, Height = 368, Pad = 12;
     private const int ListTop = 32, ListHeight = 268;
     private const int RowH = 26;
 
     // Buttons, and the two lists, kept in ranges that cannot be confused: the same WM_COMMAND carries a list
     // box's notifications, whose low word is the control's id just as a button's is.
-    private const int IdByClass = 100, IdByProcess = 101, IdToggle = 102, IdRemove = 103, IdClose = 104,
-                      IdRefresh = 105;
+    //
+    // There is no close button among them. The window has a title bar and a system menu, so the X is already
+    // there and a second way to do the one thing the X does is a second thing to keep in step - and the X is
+    // the one the user asked for, which is why nothing else closes this window either. See WM_CLOSE.
+    private const int IdByClass = 100, IdByProcess = 101, IdToggle = 102, IdRemove = 103,
+                      IdRefresh = 104;
     private const int IdRecent = 200, IdRules = 201;
 
     private const int LbnSelChange = 1;
@@ -52,7 +70,7 @@ internal static class BlacklistPanel
     private static bool _registered;
 
     private static IntPtr _hwnd, _recentBox, _rulesBox, _byClass, _byProcess, _toggle, _remove, _empty;
-    private static IntPtr _recentLabel, _refresh, _ruleLabel, _close;
+    private static IntPtr _recentLabel, _refresh, _ruleLabel;
     private static List<Blacklist.Candidate> _candidates = new();
     private static List<Blacklist.Rule> _rules = new();
     private static readonly List<string> _recentText = new();
@@ -63,6 +81,7 @@ internal static class BlacklistPanel
 
     private static bool _suppress;   // set while this file changes a selection itself
     private static bool _selectNewest;   // a rule was just added: show it
+    private static bool _closing;   // WM_CLOSE has been seen, so the WM_DESTROY that follows is the user's X
     private static IntPtr _tray;   // the tray's window: the panel's owner, so the panel dies with it
     private static IntPtr _font;
 
@@ -113,7 +132,6 @@ internal static class BlacklistPanel
         Place(_toggle, rightX, rowY, half, RowH);
         Place(_remove, rightX + half + 8, rowY, half, RowH);
         Place(_empty, Pad, ch - (Height - 342), cw - 2 * Pad, 20);
-        Place(_close, cw - Pad - 150, ch - (Height - 366), 150, 28);
     }
 
     /// <summary>
@@ -172,12 +190,32 @@ internal static class BlacklistPanel
     }
 
     /// <summary>
-    /// Opens the panel and does not return until it is closed. Opening it twice cannot happen: the tray menu
-    /// would have to be reached while the panel holds the focus, and the handle says no even then.
+    /// Opens the panel, or brings it to the front if it is already open, and returns at once either way.
+    ///
+    /// Opening it twice cannot happen, and this is the whole of the guard: the handle says so, which is why the
+    /// handle is cleared in WM_DESTROY and not anywhere else. What it was before was a nested loop, and the
+    /// guard then tested a handle that a destroyed window was still holding: the request that arrived between
+    /// the destruction and the unwinding was refused as if a panel were up, and the panel came back only on the
+    /// third try. See the note at the top of this file.
     /// </summary>
     public static void Show()
     {
-        if (_hwnd != IntPtr.Zero) return;
+        if (_hwnd != IntPtr.Zero)
+        {
+            // Created and not yet destroyed: there is one panel, and the ask means "show me the one there is".
+            if (Native.IsWindow(_hwnd))
+            {
+                Log.Write("blacklist panel: already open; bringing it forward");
+                Native.SetForegroundWindow(_hwnd);
+                return;
+            }
+            // Destroyed, and not by us: the WM_DESTROY that would have cleared this should have run first. Said
+            // out loud because a handle that outlives its window is the one state this file must never be in and
+            // a line in the log is how it would be found, and cleared here so that the window built below is not
+            // built over the dead one's font and controls.
+            Log.Write("blacklist panel: the handle outlived its window; starting again");
+            Forget();
+        }
         if (!Register()) return;
 
         // The monitor the cursor is on, which is the one the tray icon and its menu are on, and therefore the
@@ -235,7 +273,6 @@ internal static class BlacklistPanel
         _toggle = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdToggle, Strings.T("BlacklistToggle"));
         _remove = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdRemove, Strings.T("BlacklistRemove"));
         _empty = Make("STATIC", Native.WS_CHILD | Native.WS_VISIBLE, 0, 0, 0, 0, -1, "");
-        _close = Make("BUTTON", BtnStyle(), 0, 0, 0, 0, IdClose, Strings.T("BlacklistClose"));
 
         Layout(dpi, cw, ch);
         // Before ShowWindow, because uxtheme does not restyle a window it has already shown: a control has to
@@ -258,26 +295,37 @@ internal static class BlacklistPanel
         // too large or cut off has to be read against, and they are what the arithmetic was checked with.
         Log.Write($"blacklist panel: layout at {dpi} dpi from client {cw}x{ch} " +
                   $"(logical {Native.MulDiv(cw, 96, (int)dpi)}x{Native.MulDiv(ch, 96, (int)dpi)})");
-        // The nested loop. It ends when the panel is gone, and owning the panel is what guarantees that the
-        // panel goes when the program does - so this is not a poll for the program still being there, it is the
-        // ordinary end of a modal loop. WM_QUIT is the one message that must not be swallowed here: it means the
-        // program is being asked to exit, and only the loop that owns the thread may act on that.
-        var msg = new MSG();
-        while (Native.IsWindow(_hwnd) && Native.GetMessageW(out msg, IntPtr.Zero, 0, 0))
-        {
-            if (msg.Message == Native.WM_QUIT) { Native.PostQuitMessage((int)msg.WParam); break; }
-            if (!Native.IsDialogMessageW(_hwnd, ref msg))
-            {
-                Native.TranslateMessage(ref msg);
-                Native.DispatchMessageW(ref msg);
-            }
-        }
+        // And that is all: the window is up and this returns. It used to wait here, in a loop of its own, until
+        // the panel was closed - see the note at the top of the file for what that cost. The program's loop is
+        // the only one now, and it reaches the panel through IsDialogMessage the same way this loop did.
+    }
 
-        Native.DeleteObject(_font);
+    /// <summary>
+    /// The keyboard rules a window full of controls is owed by whoever is pumping the queue, which is the tray
+    /// host's loop and no longer a loop of this file's own: Tab between the controls, the arrows and the page
+    /// keys inside a list, Enter on the button that has the focus, and Esc.
+    ///
+    /// False when the message is not the panel's and the caller should dispatch it as it always would. The
+    /// handle is not checked with IsWindow: it is cleared in WM_DESTROY, and a message cannot arrive for a
+    /// window that is gone without that having happened first.
+    /// </summary>
+    public static bool IsDialogMessage(ref MSG msg)
+        => _hwnd != IntPtr.Zero && Native.IsDialogMessageW(_hwnd, ref msg);
+
+    /// <summary>
+    /// Forgets the window and everything that was on it, called where the panel is known to be gone: WM_DESTROY
+    /// for the ordinary case, and the stale-handle case in Show, which should not happen and is handled anyway.
+    ///
+    /// A method rather than a block in WM_DESTROY because a second call to Show would otherwise build a second
+    /// set of controls and a second font over the first set's handles, with only one of them ever reachable.
+    /// </summary>
+    private static void Forget()
+    {
+        if (_font != IntPtr.Zero) Native.DeleteObject(_font);
         _font = IntPtr.Zero;
         _hwnd = _recentBox = _rulesBox = IntPtr.Zero;
         _byClass = _byProcess = _toggle = _remove = _empty = IntPtr.Zero;
-        _recentLabel = _refresh = _ruleLabel = _close = IntPtr.Zero;
+        _recentLabel = _refresh = _ruleLabel = IntPtr.Zero;
         _candidates.Clear();
         _rules.Clear();
         _recentText.Clear();
@@ -506,10 +554,6 @@ internal static class BlacklistPanel
                 Blacklist.Remove(_rules[_selIndex]);
                 break;
 
-            case IdClose:
-                Native.DestroyWindow(_hwnd);
-                return;
-
             default:
                 return;
         }
@@ -524,23 +568,6 @@ internal static class BlacklistPanel
 
     /// <summary>Asked for before the rebuild, because the new rule's index only exists afterwards.</summary>
     private static void SelectNewestRule() => _selectNewest = true;
-
-    /// <summary>
-    /// Closes the panel if it is open, and returns at once.
-    ///
-    /// A posted message rather than a function call, because the panel is a nested message loop: it is asleep
-    /// in GetMessageW and can only be woken by a message. This is what the tray menu calls before it opens, so
-    /// that a popup menu can never be shown while a modal window of this process holds the foreground - which
-    /// is what made the menu's Exit item do nothing: the click went to a menu whose owner was not the
-    /// foreground window, and the shell threw it away.
-    /// </summary>
-    public static void Close()
-    {
-        // Sent, not posted: whoever calls this is about to open the tray menu, and the point is that the panel
-        // is gone by then. A posted message would still be in the queue at that moment.
-        if (_hwnd != IntPtr.Zero && Native.IsWindow(_hwnd))
-            Native.SendMessageW(_hwnd, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-    }
 
     /// <summary>
     /// The tray host's window, which becomes the panel's owner when it is created. Set once at start-up, before
@@ -580,7 +607,7 @@ internal static class BlacklistPanel
     private static IntPtr[] AllControls() => new[]
     {
         _recentLabel, _refresh, _ruleLabel, _recentBox, _rulesBox, _byClass, _byProcess, _toggle,
-        _remove, _empty, _close,
+        _remove, _empty,
     };
 
     private static bool Register()
@@ -658,17 +685,30 @@ internal static class BlacklistPanel
             }
 
             case Native.WM_CLOSE:
+                // Written down because this is the only way the panel is supposed to go, and anything else that
+                // closes it has to be found rather than guessed at: the title bar's X and the system menu's
+                // Close both come through here, and so would anyone else's WM_CLOSE - which is exactly what a
+                // line in the log tells apart. Alt+F4 sends SC_CLOSE to the same end.
+                Log.Write("blacklist panel: WM_CLOSE - the X, or something that sent one");
+                _closing = true;
                 Native.DestroyWindow(hwnd);
                 return IntPtr.Zero;
 
             case Native.WM_DESTROY:
-                // Deliberately no PostQuitMessage here. The nested loop ends because the window it tests with
-                // IsWindow has gone, and a quit posted here would not be there to be read by it: the loop
-                // checks IsWindow before it checks the queue, so it leaves as soon as the window is destroyed
-                // and the message is left for the program's own loop to find - which is how closing this panel
-                // used to close the program.
-                Log.Write("blacklist panel: closed");
-                Log.Write("blacklist panel: closed");
+                // Deliberately no PostQuitMessage here. There used to be a nested loop that ended because the
+                // window it tested with IsWindow had gone, and a quit posted here would have been picked up by
+                // the wrong loop; now there is one loop and it is not told anything: WM_QUIT arrives on its own
+                // when the program is asked to leave, and this window's going away is not that.
+                //
+                // Which of the two ways it went, said out loud, because they mean different things: a WM_CLOSE
+                // is the user's X, and no WM_CLOSE is either the owned window going with its owner - the
+                // program leaving, closed or crashed - or a DestroyWindow from somewhere in this program that
+                // has no business touching this window. Nothing else reaches here.
+                Log.Write(_closing
+                    ? "blacklist panel: closed, by a WM_CLOSE"
+                    : "blacklist panel: closed without a WM_CLOSE - its owner going, or a DestroyWindow of its own");
+                _closing = false;
+                Forget();
                 return IntPtr.Zero;
 
             default:

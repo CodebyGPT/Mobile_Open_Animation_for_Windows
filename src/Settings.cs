@@ -506,7 +506,7 @@ internal static class Strings
         ["BlacklistByProcess"] = ("Block the whole process", "拉黑整个进程"),
         ["BlacklistToggle"] = ("Enable / disable", "启用 / 禁用"),
         ["BlacklistRemove"] = ("Delete", "删除"),
-        ["BlacklistClose"] = ("Close", "关闭"),
+        // No "Close" for the panel: it has no close button any more, only its title bar's X. See BlacklistPanel.
         // Square brackets, not the full-width parentheses these used to be, and no trailing space: RuleText
         // joins the notes with one and puts them all before the name, so the spacing lives in one place.
         ["BlacklistDisabled"] = ("[disabled]", "[已禁用]"),

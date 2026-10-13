@@ -657,8 +657,10 @@ internal static class Program
                 }
                 break;
             case MenuBlacklist:
-                // Modal, and its own loop, so the animation keeps running behind it: the windows it is there to
-                // list are the ones being animated while the user is looking at the panel.
+                // A window, not a dialog box and not a modal one: it opens and this returns, so the animation
+                // keeps running behind it, the tray menu keeps answering over it, and asking for it twice
+                // brings the one that is there to the front. What closes it is its own X, or this program
+                // going away - the panel is owned by the tray host's window, so the system does the rest.
                 BlacklistPanel.Show();
                 break;
             case MenuExit:
@@ -846,8 +848,16 @@ internal sealed class TrayHost
         }
         while (Native.GetMessageW(out var msg, IntPtr.Zero, 0, 0))
         {
-            Native.TranslateMessage(ref msg);
-            Native.DispatchMessageW(ref msg);
+            // The blacklist panel is a window full of stock controls, and what a dialog gets for free - Tab
+            // from one control to the next, the arrows and the page keys inside a list, Enter on the button
+            // that has the focus, Esc - has to be applied by whoever is pumping the queue. It used to be the
+            // panel's own loop; the panel has none now, so it is this one, and for every message that is not
+            // the panel's the call answers false and nothing changes.
+            if (!BlacklistPanel.IsDialogMessage(ref msg))
+            {
+                Native.TranslateMessage(ref msg);
+                Native.DispatchMessageW(ref msg);
+            }
         }
     }
 
@@ -1082,14 +1092,13 @@ internal sealed class TrayHost
 
         Native.GetCursorPos(out var p);
 
-        // The panel goes before the menu appears, and this is not tidiness. A popup menu is driven by the
-        // window that owns it only while that window is the foreground one, and the panel - modal, holding the
-        // focus - is not it. What happened was worse than a menu in the wrong place: the menu drew correctly
-        // and its items did nothing, Exit included, because the click went to a menu whose owner was not
-        // foreground and the shell discarded it. Nothing of ours may stand between the user and this menu, so
-        // the panel is closed first and synchronously: a posted close would still be in the queue here.
-        BlacklistPanel.Close();
-
+        // A popup menu is driven by the window that owns it only while that window is the foreground one, so
+        // the host is made foreground before the menu is asked for. That is the whole of it: the blacklist
+        // panel used to be closed here, because it was modal and held the focus, and a menu whose owner was
+        // not foreground drew correctly and then did nothing - Exit included. The panel is not modal any more
+        // and does not hold anything; it stays where it is and the menu is used over it. If a test ever shows
+        // the menu's items not answering while the panel is open, the answer is to hide the panel for the
+        // length of the menu rather than to close it - its lifetime is the user's now, not this method's.
         Native.SetForegroundWindow(_hwnd);
         int cmd = Native.TrackPopupMenu(menu, Native.TPM_RIGHTBUTTON | Native.TPM_RETURNCMD,
                                         p.X, p.Y, 0, _hwnd, IntPtr.Zero);

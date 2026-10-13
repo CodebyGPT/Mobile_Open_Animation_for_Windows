@@ -38,13 +38,13 @@
 //
 // The box also has an egg in it, and it is a mouse's: clicking the icon - the program's own, which is what
 // TDF_USE_HICON_MAIN puts there - writes the same thirteen-step code into the box one glyph at a time,
-// up up down down left left right right A B A B and Enter, for as long as the clicks keep coming within two
-// seconds of each other; two seconds of nothing puts the title back, and the fourteenth click does nothing
-// more than the thirteenth. Two things about it are not obvious. It cannot be a control, because the icon is
-// drawn by the dialog's DirectUI scene and there is nothing to click - so the hook has a point and the icon's
-// cell is measured into the source (see IconCell). And it is a second low-level hook rather than a use of the
-// keyboard one, because it is watching a mouse and because it must work in the box's other state, when the
-// launch-ad entry is already in the menu and no key is watched for at all.
+// up up down down left left right right A B A B and Enter, for as long as the clicks keep coming within a second
+// of each other; a second of nothing puts the title back, and the fourteenth click does nothing more than the
+// thirteenth. Two things about it are not obvious. It cannot be a control, because the icon is drawn by the
+// dialog's DirectUI scene and there is nothing to click - so the hook has a point and the icon's cell is measured
+// into the source (see IconCell). And it is a second low-level hook rather than a use of the keyboard one,
+// because it is watching a mouse; it goes on and comes off with that one, since it is the other half of the same
+// hint and neither half has anything to hint at once the launch-ad entry is in the menu.
 
 using System.Runtime.InteropServices;
 using System.Text;
@@ -161,21 +161,23 @@ internal static class AboutDialog
         // reading it, and nothing is hooked at all. Editing the ini can put it back - see Settings.AdsVisible.
         if (Program.S.AdsVisible)
         {
-            Log.Write("about: the launch-ad entry is already in the menu; the code is not watched for");
+            Log.Write("about: the launch-ad entry is already in the menu; neither the code nor the icon is " +
+                      "watched for");
         }
         else
         {
             _hook = Native.SetWindowsHookExW(Native.WH_KEYBOARD_LL, _hookProc,
                                              Native.GetModuleHandleW(null), 0);
             Log.Write($"about: keyboard hook {(_hook != IntPtr.Zero ? "installed" : "FAILED")}");
-        }
 
-        // The click hook goes on either way: the icon is the box's own and the egg is a mouse, not a key. It
-        // is the only thing wanted for the whole life of the box, and the keyboard hook's own rule - nothing
-        // may outlive the dialog - is kept by the finally below.
-        _mouseHook = Native.SetWindowsHookExW(Native.WH_MOUSE_LL, _mouseProc,
-                                              Native.GetModuleHandleW(null), 0);
-        if (_mouseHook == IntPtr.Zero) Log.Write("about: mouse hook FAILED; the egg cannot be clicked up");
+            // The click hook goes on with the key hook and comes off with it, because the egg is the other half
+            // of the same hint: clicking the icon spells out the very sequence the keys play, glyph by glyph.
+            // Once the entry is in the menu there is nothing left to hint at - the box is about the program,
+            // and the icon is the program's own picture in the corner of it.
+            _mouseHook = Native.SetWindowsHookExW(Native.WH_MOUSE_LL, _mouseProc,
+                                                  Native.GetModuleHandleW(null), 0);
+            if (_mouseHook == IntPtr.Zero) Log.Write("about: mouse hook FAILED; the egg cannot be clicked up");
+        }
 
         // The program's own icon as the box's icon, in place of the blue information one. The dialog draws
         // whatever it is handed here exactly as it draws its own - see TDF_USE_HICON_MAIN - so this box still
@@ -416,8 +418,19 @@ internal static class AboutDialog
     /// </summary>
     private const string Egg = "\u2191\u2191\u2193\u2193\u2190\u2190\u2192\u2192ABAB\u21B5";
 
-    /// <summary>How long after a click the box goes back to saying what it said.</summary>
-    private const int EggBackMs = 2000;
+    /// <summary>
+    /// How long after a click the box goes back to saying what it said. Two seconds was the first number and it
+    /// was too long to watch: the point of the hint is that the next glyph answers the last one, and a glyph that
+    /// stays for two seconds after the clicking has stopped reads as a box that has got stuck rather than as a
+    /// hint that has finished.
+    ///
+    /// One second, which the measured sessions bracket: the shortest gap between two clicks in a run of them was
+    /// 202 ms, and the longest one that still went on to the next glyph was 1917 ms - under the two seconds this
+    /// replaces, and over this. So a pause as long as that one now ends the run, and the click after it starts
+    /// again at the first glyph. That is what shortening it means, and 1500 ms is the number in between if a
+    /// second turns out to be too short on the screen.
+    /// </summary>
+    private const int EggBackMs = 1000;
 
     /// <summary>
     /// How much of <see cref="Egg" /> is showing. Zero is the box as it was built, and it never passes the
