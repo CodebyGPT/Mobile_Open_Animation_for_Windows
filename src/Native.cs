@@ -143,6 +143,10 @@ internal static class Native
 
     public const int SW_SHOWMINIMIZED = 2;
 
+    /// <summary>Brings a minimized window back to the size and place it had, which is what a window that was
+    /// minimized underneath the user needs rather than a plain show. See BlacklistPanel.Show.</summary>
+    public const int SW_RESTORE = 9;
+
     [StructLayout(LayoutKind.Sequential)]
     public struct WINDOWPLACEMENT
     {

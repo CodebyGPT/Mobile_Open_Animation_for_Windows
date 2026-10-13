@@ -647,7 +647,7 @@ internal static class Program
                 // True means the launch-ad code was played into the box while it was open. That is the whole
                 // way in: reveal the entry, then open the menu the code's last step asked for, so the entry
                 // that was just revealed is on screen rather than being something to go and look for.
-                if (AboutDialog.Show(_host.Hwnd))
+                if (AboutDialog.Show(IntPtr.Zero))
                 {
                     Log.Write("about: the launch-ad code was entered; revealing the menu entry");
                     _s.AdsVisible = true;
@@ -730,9 +730,6 @@ internal sealed class TrayHost
         if (Native.RegisterClassExW(ref cls) == 0) throw new InvalidOperationException("RegisterClassExW failed");
         _hwnd = Native.CreateWindowExW(0, Native.SelfClassName, "Mobile Open Animation for Windows",
                                        0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
-        // So that the panel can tell the program is going away even if it is exited by something that never
-        // reaches its own menu: logoff, Task Manager, a crash in the tray.
-        BlacklistPanel.SetHost(_hwnd);
 
         // Registered before the icon is added, so the handler is armed before there is anything that could
         // be lost. Explorer broadcasts this to every top-level window when it builds its tray, which it
@@ -973,6 +970,11 @@ internal sealed class TrayHost
                     return IntPtr.Zero;
 
                 case Native.WM_DESTROY:
+                    // The panel is not owned by this window any more - being owned is what dragged it to the
+                    // bottom of the Z-order with an owner nobody ever sees - so its lifetime is said here
+                    // instead: this is the program going away, and the panel goes with it while the message loop
+                    // is still running rather than being taken down by the kernel with everything else.
+                    BlacklistPanel.DestroyWithHost();
                     Native.PostQuitMessage(0);
                     return IntPtr.Zero;
             }

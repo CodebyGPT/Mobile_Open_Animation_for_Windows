@@ -106,7 +106,6 @@ internal static class BlacklistPanel
     private static bool _suppress;   // set while this file changes a selection itself
     private static bool _selectNewest;   // a rule was just added: show it
     private static bool _closing;   // WM_CLOSE has been seen, so the WM_DESTROY that follows is the user's X
-    private static IntPtr _tray;   // the tray's window: the panel's owner, so the panel dies with it
     private static IntPtr _font;
 
     /// <summary>
@@ -414,7 +413,23 @@ internal static class BlacklistPanel
             // Created and not yet destroyed: there is one panel, and the ask means "show me the one there is".
             if (Native.IsWindow(_hwnd))
             {
-                Log.Write("blacklist panel: already open; bringing it forward");
+                // Written down because a report of the panel going out of sight when the desktop is clicked, and
+                // coming back when the tray is, left nothing at all in the log: no line of this file's and
+                // nothing that destroyed it, so it was not destroyed. What is left is the state it is in when
+                // somebody asks for it again - hidden, minimized, or simply behind something - and the window at
+                // its own middle, which names whatever was in front of it if it was covered.
+                Native.GetWindowRect(_hwnd, out var r);
+                var middle = new POINT { X = (r.Left + r.Right) / 2, Y = (r.Top + r.Bottom) / 2 };
+                Log.Write($"blacklist panel: already open; bringing it forward (visible=" +
+                          $"{Native.IsWindowVisible(_hwnd)}, minimized={Native.WindowIsMinimized(_hwnd)}, " +
+                          $"at its middle: {ClassOf(Native.WindowFromPoint(middle))})");
+
+                // Being out of sight has three forms and each has one call. None of them is reached when the
+                // panel is merely behind something, and none of them costs anything then either.
+                if (Native.WindowIsMinimized(_hwnd)) Native.ShowWindow(_hwnd, Native.SW_RESTORE);
+                else if (!Native.IsWindowVisible(_hwnd)) Native.ShowWindow(_hwnd, Native.SW_SHOW);
+                Native.SetWindowPos(_hwnd, Native.HWND_TOP, 0, 0, 0, 0,
+                                    Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
                 Native.SetForegroundWindow(_hwnd);
                 return;
             }
@@ -437,15 +452,26 @@ internal static class BlacklistPanel
         // they are only here because a window has to be created at some size. It is not shown until after
         // FitToWorkArea, which cannot run until the window exists - asking a window about its display and its
         // font is the whole of how the size is worked out.
-        // Owned by the tray host, and that one argument is the whole of the panel's lifetime binding. Windows
-        // destroys an owner's owned windows when it destroys the owner, so the panel cannot outlive the program:
-        // nothing here notices anything, nothing polls, and a program that is killed outright takes its windows
-        // with it anyway because the kernel tears a process's windows down with it. This replaced a timer that
-        // asked "is the tray window still there" twice a second, which was a way of finding out something the
-        // system already knew and could have been told for free.
-        _hwnd = Native.CreateWindowExW((uint)Native.WS_EX_TOOLWINDOW, ClassName, Strings.T("Blacklist"),
-            Style, work.Left, work.Top, Width, Width, _tray, IntPtr.Zero, Native.GetModuleHandleW(null),
-            IntPtr.Zero);
+        //
+        // UNOWNED, and that is the whole of a report that took a long time to read. It used to be owned by the
+        // tray host - for the lifetime, and because an owner's windows are destroyed with it - and what that
+        // cost was this: an owned window is dragged down the Z-order with its owner, and the owner here is a
+        // window nobody ever sees, which the shell moves about on its own account. Every click on the tray icon
+        // makes that host the foreground window, and the panel and the About box went down with it until they
+        // sat just above the desktop's own window - after which a click on the desktop raised the desktop's
+        // full-screen view over them and the panel was out of sight, still visible, still in place, and beyond
+        // reach: a process without the foreground cannot raise its own window back over one that has it.
+        // Measured in probe/panelzorder: with the invisible owner sent to the bottom the windows it owns follow
+        // it to 340 and 343 while an unowned window of the same kind stays at 45, and the desktop's window is at
+        // 345 - one above the owned pair and hundreds below the unowned one.
+        //
+        // The lifetime the owner used to carry is now DestroyWithHost, called from the tray host's own WM_DESTROY
+        // - which is the same moment, arrived at from our side, with no polling and nothing to notice: the
+        // program going away destroys the panel, and a program that is killed outright takes its windows with it
+        // anyway because the kernel tears a process's windows down with it.
+        _hwnd = Native.CreateWindowExW((uint)Native.WS_EX_TOOLWINDOW, ClassName,
+            Strings.T("Blacklist"), Style, work.Left, work.Top, Width, Width, IntPtr.Zero, IntPtr.Zero,
+            Native.GetModuleHandleW(null), IntPtr.Zero);
         if (_hwnd == IntPtr.Zero) return;
 
         // The window's own scale, asked after it exists because that is the only moment the answer is about the
@@ -520,6 +546,52 @@ internal static class BlacklistPanel
         // And that is all: the window is up and this returns. It used to wait here, in a loop of its own, until
         // the panel was closed - see the note at the top of the file for what that cost. The program's loop is
         // the only one now, and it reaches the panel through IsDialogMessage the same way this loop did.
+    }
+
+    /// <summary>
+    /// The class of a window, for the log: it is what names whatever is standing in front of the panel when a
+    /// report says the panel is not there. Empty for a window that is not there at all.
+    /// </summary>
+    private static string ClassOf(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return "(nothing)";
+        var name = new System.Text.StringBuilder(64);
+        Native.GetClassNameW(hwnd, name, name.Capacity);
+        return name.Length == 0 ? "(no class)" : name.ToString();
+    }
+
+    /// <summary>
+    /// Puts the window back where it can be seen, if the display it was on has gone or has shrunk out from
+    /// under it.
+    ///
+    /// A monitor being unplugged, or changing resolution or scale, moves nothing that was already on screen:
+    /// Windows leaves the window where it was, off the edge of every screen, where it can be neither read nor
+    /// closed. This is the one thing about more than one display that this file does, and it is done at the
+    /// moment the system says something about the displays - WM_DISPLAYCHANGE and the environment changing -
+    /// rather than by asking. Nothing here polls, and nothing here draws: the window is moved and sized, which
+    /// is the same call that opened it.
+    ///
+    /// The test is an overlap with the work area of the monitor nearest the window, not containment: a window
+    /// hung half off the edge of a screen on purpose is where the user put it and stays there, and only one
+    /// with nothing on any screen is moved.
+    /// </summary>
+    private static void PutBackOnScreen(IntPtr hwnd)
+    {
+        if (!Native.GetWindowRect(hwnd, out var r)) return;
+        var here = WorkAreaOf(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST));
+        bool onAScreen = r.Right > here.Left && r.Left < here.Right && r.Bottom > here.Top && r.Top < here.Bottom;
+        if (onAScreen) return;
+
+        // The monitor the cursor is on, which is the one being looked at, and the size the layout asks for at
+        // that monitor's scale. The same call the panel is opened with, so it comes back in the shape and the
+        // place it would have opened in.
+        Native.GetCursorPos(out var cursor);
+        var target = WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
+        uint dpi = Native.GetDpiForWindow(hwnd);
+        if (dpi == 0) dpi = Native.GetDpiForSystem();
+        Log.Write($"blacklist panel: {r.Left},{r.Top} is off every screen now (the display it was on changed); " +
+                  $"putting it back on the one the cursor is on, at {dpi} dpi");
+        FitToWorkArea(dpi, target);
     }
 
     /// <summary>
@@ -792,10 +864,17 @@ internal static class BlacklistPanel
     private static void SelectNewestRule() => _selectNewest = true;
 
     /// <summary>
-    /// The tray host's window, which becomes the panel's owner when it is created. Set once at start-up, before
-    /// the panel can be opened; nothing here polls it afterwards, because being the owner is what does the work.
+    /// Destroys the panel when the tray host is destroyed, which is the lifetime that used to be carried by the
+    /// owner argument and cannot be any more: being owned is what put the panel at the bottom of the Z-order
+    /// with an invisible owner. Called from the host's own WM_DESTROY, which is the last moment anything of this
+    /// program runs, so there is nothing left open behind the message loop and nothing is left for the kernel to
+    /// do on the way out either. A program that is killed outright never gets here and does not need to: its
+    /// windows go with the process.
     /// </summary>
-    public static void SetHost(IntPtr trayHwnd) => _tray = trayHwnd;
+    public static void DestroyWithHost()
+    {
+        if (_hwnd != IntPtr.Zero && Native.IsWindow(_hwnd)) Native.DestroyWindow(_hwnd);
+    }
 
     /// <summary>
     /// Puts the window and every control on it onto the system's theme, and asks for one repaint. Nothing here
@@ -901,8 +980,18 @@ internal static class BlacklistPanel
                     ApplyTheme(hwnd);
                     Log.Write($"blacklist panel: rethemed to {(Native.DarkMode.On ? "dark" : "light")}");
                 }
+                // The metrics of the window frame itself, which is what a taskbar that grew, a scale that
+                // changed or a display that went away all arrive as. The window may have been left on no
+                // screen at all by it. See PutBackOnScreen.
+                else if (area is "WindowMetrics" or "Display") PutBackOnScreen(hwnd);
                 return IntPtr.Zero;
             }
+
+            case Native.WM_DISPLAYCHANGE:
+                // A display was added, removed or resized. Sent to every top-level window, so this one hears it
+                // directly - and it is the only other moment at which this file does anything about where it is.
+                PutBackOnScreen(hwnd);
+                return IntPtr.Zero;
 
             case Native.WM_CTLCOLORSTATIC:
             {
