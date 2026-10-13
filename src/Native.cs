@@ -380,6 +380,10 @@ internal static class Native
     public const uint GA_ROOT = 2;
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
 
+    /// <summary>A screen point in a window's own coordinates; see AboutDialog's egg, which has a click and
+    /// wants to know whether it was on the icon.</summary>
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct MSLLHOOKSTRUCT
     {

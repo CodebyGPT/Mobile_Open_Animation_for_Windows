@@ -436,12 +436,12 @@ internal static class Strings
         ["AutoStart"]    = ("Start with Windows", "开机自启"),
         ["CloseAnim"]    = ("Animate windows closing", "窗口关闭动画"),
         ["DynamicCorner"] = ("Dynamic corner radius", "动态圆角"),
-        // Named for the desktop because that is where it is most visible, and what it does not cover is
-        // worth saying out loud: a launch from the Start menu or from search is refused, because those
-        // flyouts are gone by the time the window closes and there would be nothing at that place to
-        // return to. The taskbar is covered too, since it is also still there.
-        ["ReturnToOrigin"] = ("Desktop return animation (experimental)",
-                              "桌面回退动画（实验性）"),
+        // Not named for the desktop any more, which is what made the name long: it covers the taskbar and
+        // the desktop both, and what it does not cover is worth saying out loud - a launch from the Start
+        // menu or from search is refused, because those flyouts are gone by the time the window closes and
+        // there would be nothing at that place to return to.
+        ["ReturnToOrigin"] = ("Return animation (experimental)",
+                              "回退动画（实验性）"),
         // Hidden until the About box's advertisement code is entered, or the ini says otherwise. The two
         // entries under it are the two kinds of advertisement; see Ads.Menu for which of them can be clicked.
         ["Ads"]          = ("Play ad", "播放广告"),

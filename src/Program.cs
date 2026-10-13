@@ -504,7 +504,7 @@ internal static class Program
         MenuExit => "Exit",
         MenuCloseAnim => "Window close animation",
         MenuDynCorner => "Dynamic corner radius",
-        MenuReturnOrigin => "Desktop return animation",
+        MenuReturnOrigin => "Return animation",
         MenuAdsWindow => "Ad > Window ad",
         MenuAdsBootAd => "Ad > Logon full-screen ad",
         MenuDebugEnable => "Debug mode",

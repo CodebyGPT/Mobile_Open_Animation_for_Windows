@@ -35,6 +35,16 @@
 // text, which was the first thing tried and silently did nothing: the dialog's content is a SysLink inside a
 // DirectUIHWND and its main instruction is not a control at all, so there is no window holding the text. The
 // title bar does have one - it is the dialog's own - and that is set directly. probe/aboutdialog measures both.
+//
+// The box also has an egg in it, and it is a mouse's: clicking the icon - the program's own, which is what
+// TDF_USE_HICON_MAIN puts there - writes the same thirteen-step code into the box one glyph at a time,
+// up up down down left left right right A B A B and Enter, for as long as the clicks keep coming within two
+// seconds of each other; two seconds of nothing puts the title back, and the fourteenth click does nothing
+// more than the thirteenth. Two things about it are not obvious. It cannot be a control, because the icon is
+// drawn by the dialog's DirectUI scene and there is nothing to click - so the hook has a point and the icon's
+// cell is measured into the source (see IconCell). And it is a second low-level hook rather than a use of the
+// keyboard one, because it is watching a mouse and because it must work in the box's other state, when the
+// launch-ad entry is already in the menu and no key is watched for at all.
 
 using System.Runtime.InteropServices;
 using System.Text;
@@ -49,6 +59,12 @@ internal static class AboutDialog
     /// rather than a dialog that stops answering.
     /// </summary>
     private static Native.TaskDialogCallback? _callback;
+
+    /// <summary>
+    /// True from the moment a box is asked for until it is closed. See <see cref="Show" />: the box's own
+    /// modal loop is what lets a second ask arrive while the first is still on the stack.
+    /// </summary>
+    private static bool _open;
 
     // ---- the launch-ad code ---------------------------------------------------------------------------
 
@@ -68,23 +84,57 @@ internal static class AboutDialog
     private static IntPtr _hook;
     private static Native.HookProc? _hookProc;
 
-    /// <summary>
-    /// The step waiting to be played, 0 for none.
+    /// <summary>The step waiting to be played, 0 for none.
     ///
     /// Written by the hook callback and read by the timer below, which are the same thread at different
     /// moments - which is why one number is enough and why it needs no queue.
     /// </summary>
     private static int _due;
 
-    /// <summary>The id the waiting-step timer is armed under, and the callback it was armed with.</summary>
+    /// <summary>
+    /// The id of the timer that is waiting to play that step, as SetTimer returned it.
+    ///
+    /// A timer with no window does not answer to the id it was asked for. SetTimer(NULL, 1, ...) is asked for
+    /// id 1, generates one of its own and hands that to the callback; KillTimer(NULL, 1) then kills nothing at
+    /// all, and the timer - armed at one millisecond - keeps ticking for the rest of the program's life. Every
+    /// id here is therefore the one that came back, and it is what kills the timer. Measured in
+    /// probe/aboutdialog, which counts the ticks that a timer killed by the id it asked for goes on making.
+    /// </summary>
+    private static IntPtr _dueId;
+
+    /// <summary>
+    /// The id the waiting-step timer is armed under, and the callback it is armed with. The id is only what
+    /// the call is made with: a timer with no window is given one of Windows' own and it is that one which
+    /// has to be kept. See _dueId.
+    /// </summary>
     private static readonly IntPtr DueTimer = (IntPtr)1;
     private static Native.TimerProc? _dueProc;
 
     /// <summary>
-    /// Shows the box and returns when it is closed, saying whether the launch-ad code was entered while it was
-    /// up. True is the caller's cue to reveal the entry and open the menu; this file knows nothing about either.
+    /// Shows the box and returns when it is closed, saying whether the launch-ad code was entered while it
+    /// was up. True is the caller's cue to reveal the entry and open the menu; this file knows nothing about
+    /// either.
+    ///
+    /// One box at a time. The box runs a modal loop of its own, and that loop is what pumps this thread's
+    /// messages - which is where the tray icon's menu is answered. Asking for "About" a second time while the
+    /// first box is up therefore arrives here with this method still on the stack, and building a second box
+    /// over the first is not what the click meant. The second ask brings the box that is already there to
+    /// the front instead, which is what it did mean.
     /// </summary>
     public static bool Show(IntPtr owner)
+    {
+        if (_open)
+        {
+            Log.Write("about: the box is already up; bringing it forward instead of building a second one");
+            if (_dlg != IntPtr.Zero) Native.SetForegroundWindow(_dlg);
+            return false;
+        }
+        _open = true;
+        try { return ShowOnce(owner); }
+        finally { _open = false; }
+    }
+
+    private static bool ShowOnce(IntPtr owner)
     {
         _callback = OnNotification;
         _reveal = false;
@@ -99,6 +149,13 @@ internal static class AboutDialog
         _due = 0;
         _dueProc = OnDue;
         _hookProc = OnKey;
+        _egg = 0;
+        _clickOnIcon = -1;
+        _writeProc = OnEggWrite;
+        _clockProc = OnEggClock;
+        _writeId = _clockId = IntPtr.Zero;
+        _dueId = IntPtr.Zero;
+        _mouseProc = OnMouse;
         // Watched for only while there is something left to reveal. Once the entry is in the menu the code has
         // done its job, and this box goes back to being a box: the arrows and the letters belong to whoever is
         // reading it, and nothing is hooked at all. Editing the ini can put it back - see Settings.AdsVisible.
@@ -112,6 +169,13 @@ internal static class AboutDialog
                                              Native.GetModuleHandleW(null), 0);
             Log.Write($"about: keyboard hook {(_hook != IntPtr.Zero ? "installed" : "FAILED")}");
         }
+
+        // The click hook goes on either way: the icon is the box's own and the egg is a mouse, not a key. It
+        // is the only thing wanted for the whole life of the box, and the keyboard hook's own rule - nothing
+        // may outlive the dialog - is kept by the finally below.
+        _mouseHook = Native.SetWindowsHookExW(Native.WH_MOUSE_LL, _mouseProc,
+                                              Native.GetModuleHandleW(null), 0);
+        if (_mouseHook == IntPtr.Zero) Log.Write("about: mouse hook FAILED; the egg cannot be clicked up");
 
         // The program's own icon as the box's icon, in place of the blue information one. The dialog draws
         // whatever it is handed here exactly as it draws its own - see TDF_USE_HICON_MAIN - so this box still
@@ -144,10 +208,18 @@ internal static class AboutDialog
         }
         finally
         {
-            Native.KillTimer(IntPtr.Zero, DueTimer);
+            // By the ids the calls returned, never by the ones they were asked for: see _dueId.
+            if (_dueId != IntPtr.Zero) Native.KillTimer(IntPtr.Zero, _dueId);
+            if (_writeId != IntPtr.Zero) Native.KillTimer(IntPtr.Zero, _writeId);
+            if (_clockId != IntPtr.Zero) Native.KillTimer(IntPtr.Zero, _clockId);
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
+            if (_mouseHook != IntPtr.Zero) Native.UnhookWindowsHookEx(_mouseHook);
             _hook = IntPtr.Zero;
+            _mouseHook = IntPtr.Zero;
             _due = 0;
+            _dueId = _writeId = _clockId = IntPtr.Zero;
+            _egg = 0;
+            _clickOnIcon = -1;
             _dlg = IntPtr.Zero;
             // After the dialog has returned and not before: it is the dialog that is drawing it. See AppIcon.
             if (icon != IntPtr.Zero) Native.DestroyIcon(icon);
@@ -168,7 +240,18 @@ internal static class AboutDialog
         // Sent once the box and its controls are both built, and it is where the handle comes from: the callback
         // is handed the dialog on every notification, but the keys have to be watched from before the box is
         // ever shown, so the handle has to be written down when it first exists.
-        else if (msg == Native.TDN_DIALOG_CONSTRUCTED) _dlg = hwnd;
+        else if (msg == Native.TDN_DIALOG_CONSTRUCTED)
+        {
+            _dlg = hwnd;
+            // Written down because the egg's hit test is a box this program worked out rather than one the
+            // system was asked for, and a click that misses has to have something to be compared against.
+            if (_mouseHook != IntPtr.Zero)
+            {
+                var cell = IconCell();
+                Log.Write($"about: the icon's cell is ({cell.Left},{cell.Top})-({cell.Right},{cell.Bottom}) " +
+                          $"in the client area, at {Native.GetDpiForWindow(hwnd)} dpi");
+            }
+        }
         return 0;   // S_OK
     }
 
@@ -205,13 +288,13 @@ internal static class AboutDialog
                 if (step != 0)
                 {
                     _due = step;
-                    Native.SetTimer(IntPtr.Zero, DueTimer, 1, _dueProc!);
+                    _dueId = Native.SetTimer(IntPtr.Zero, DueTimer, 1, _dueProc!);
                 }
                 else if (Konami.LastDrop != Konami.DropNone)
                 {
                     // Not logged here either. What the log gets is the same fact, one timer tick later.
                     _due = -Konami.LastDrop;
-                    Native.SetTimer(IntPtr.Zero, DueTimer, 1, _dueProc!);
+                    _dueId = Native.SetTimer(IntPtr.Zero, DueTimer, 1, _dueProc!);
                 }
             }
         }
@@ -225,7 +308,9 @@ internal static class AboutDialog
     /// </summary>
     private static void OnDue(IntPtr hwnd, uint msg, IntPtr id, uint time)
     {
-        Native.KillTimer(IntPtr.Zero, DueTimer);
+        // By the id it came in with, not by the one it was asked for: see _dueId.
+        Native.KillTimer(IntPtr.Zero, id);
+        _dueId = IntPtr.Zero;
         int due = _due;
         _due = 0;
         if (due == 0 || _dlg == IntPtr.Zero) return;
@@ -321,5 +406,184 @@ internal static class AboutDialog
         foreach (char ch in text) sb.Append(ch is '\n' or '\r' ? ch : c);
         return sb.ToString();
     }
+
+    // ---- the egg: clicking the icon --------------------------------------------------------------------
+
+    /// <summary>
+    /// The arcade code as glyphs, which is what the box writes itself for a click: up up down down left left
+    /// right right A B A B and Enter, spelled out (U+2191, U+2193, U+2190, U+2192, U+21B5). The same thirteen
+    /// as <see cref="Konami" />, and what a click buys is one more of them.
+    /// </summary>
+    private const string Egg = "\u2191\u2191\u2193\u2193\u2190\u2190\u2192\u2192ABAB\u21B5";
+
+    /// <summary>How long after a click the box goes back to saying what it said.</summary>
+    private const int EggBackMs = 2000;
+
+    /// <summary>
+    /// How much of <see cref="Egg" /> is showing. Zero is the box as it was built, and it never passes the
+    /// code's own length: at thirteen the whole thing is up and further clicks only hold it there.
+    /// </summary>
+    private static int _egg;
+
+    /// <summary>
+    /// The mouse hook, and the reason it decides nothing either: the hook that watches the launch-ad code
+    /// already lives by this rule and the egg's write is the same re-measure and repaint. See
+    /// <see cref="OnKey" />.
+    /// </summary>
+    private static IntPtr _mouseHook;
+    private static Native.HookProc? _mouseProc;
+
+    /// <summary>The click the hook left behind, and the timer that writes it out.</summary>
+    private static readonly IntPtr EggWriteTimer = (IntPtr)2, EggClockTimer = (IntPtr)3;
+    private static Native.TimerProc? _writeProc, _clockProc;
+
+    /// <summary>
+    /// The two waiting timers, by the id SetTimer returned - the only id that means anything for a timer with
+    /// no window, and the only one that kills. See _dueId for the whole of that; what is here is the two of
+    /// them, one per click (plays it) and one per egg (ends it), so that the finally that closes the box can
+    /// stop either if it is still waiting.
+    /// </summary>
+    private static IntPtr _writeId, _clockId;
+
+    /// <summary>
+    /// The last click that landed on the box itself, in the dialog's client coordinates, and whether it was
+    /// on the icon - -1 when there is nothing waiting to be written. It exists because the icon's cell is a
+    /// number this program worked out rather than one it was given, so "the egg does not answer" is otherwise
+    /// a question with nothing in the log to answer it with. Clicked by the hook, written out by the timer:
+    /// the file is on the other side of that line deliberately.
+    /// </summary>
+    private static int _clickX, _clickY, _clickOnIcon = -1;
+
+    /// <summary>
+    /// Where the box's main icon is drawn, in device-independent pixels of the dialog's client area, scaled
+    /// to the display it is on: a 32-pixel cell starting at (11,11) with the box widened to give a click
+    /// around the drawing somewhere to land - and widened no further, because the main instruction's own
+    /// text starts to the right of it and a click on that is not a click on the icon.
+    ///
+    /// Measured, not worked out. comctl32 draws the icon itself, in its DirectUI scene, so there is no
+    /// control to ask and no rectangle to read: probe/aboutdialog photographs the box with the same flags and
+    /// the same instruction, finds the icon's ink in the picture - 11,11 to 40,41 at 96 dpi, with the
+    /// information icon's disc filling a 32-pixel cell - and that is where these come from. The icon's own
+    /// drawing is inset about a pixel inside its cell, which is what the spare pixel on each side is for.
+    /// </summary>
+    private const int IconLeftDip = 10, IconTopDip = 10, IconRightDip = 44, IconBottomDip = 44;
+
+    /// <summary>
+    /// The icon's cell in the dialog's own coordinates. The dialog's DPI rather than the display's, because
+    /// the box may be on the monitor that is not the one this program started on, and 96 when the handle is
+    /// not a window yet.
+    /// </summary>
+    private static RECT IconCell()
+    {
+        int dpi = (int)Native.GetDpiForWindow(_dlg);
+        if (dpi < 96) dpi = 96;
+        return new RECT
+        {
+            Left = IconLeftDip * dpi / 96, Top = IconTopDip * dpi / 96,
+            Right = IconRightDip * dpi / 96, Bottom = IconBottomDip * dpi / 96,
+        };
+    }
+
+    /// <summary>
+    /// The click hook. It counts and it names a timer; it does not read the file, and it does not write the
+    /// box's text - see <see cref="OnKey" /> for why that rule exists. A click is only the egg's if it was on
+    /// the box at all: the icon's cell is a rectangle on the screen, and a window covering the box would
+    /// otherwise have its clicks counted as the box's.
+    /// </summary>
+    private static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam)
+    {
+        try
+        {
+            if (code >= 0 && (uint)wParam == Native.WM_LBUTTONDOWN && _dlg != IntPtr.Zero)
+            {
+                var info = Marshal.PtrToStructure<Native.MSLLHOOKSTRUCT>(lParam);
+                IntPtr under = Native.WindowFromPoint(info.Pt);
+                var p = info.Pt;
+                if (under != IntPtr.Zero && Native.GetAncestor(under, Native.GA_ROOT) == _dlg &&
+                    Native.ScreenToClient(_dlg, ref p) && InsideClient(p.X, p.Y))
+                {
+                    var cell = IconCell();
+                    bool on = p.X >= cell.Left && p.X < cell.Right && p.Y >= cell.Top && p.Y < cell.Bottom;
+                    if (on && _egg < Egg.Length) _egg++;
+                    _clickX = p.X;
+                    _clickY = p.Y;
+                    _clickOnIcon = on ? 1 : 0;
+                    // Two seconds from this click, or the egg is over - armed again on every click, which is
+                    // why the one that was already waiting is killed first. A timer with no window is
+                    // delivered by whoever pumps this thread's queue, which while the box is up is the box's
+                    // own modal loop.
+                    if (on) RearmClock();
+                    _writeId = Native.SetTimer(IntPtr.Zero, EggWriteTimer, 1, _writeProc!);
+                }
+            }
+        }
+        catch { }
+        return Native.CallNextHookEx(_mouseHook, code, wParam, lParam);
+    }
+
+    /// <summary>Whether a point in the dialog's own coordinates is inside the page rather than the frame.</summary>
+    private static bool InsideClient(int x, int y)
+    {
+        if (!Native.GetClientRect(_dlg, out var r)) return false;
+        return x >= 0 && y >= 0 && x < r.Right && y < r.Bottom;
+    }
+
+    /// <summary>
+    /// Starts the two seconds, or starts them again: what the last one was going to end, the next click has
+    /// just extended. Killing it first is not tidiness. A timer with no window does not take the id it is
+    /// asked for - SetTimer generates one - so asking twice leaves two timers running, and the older one would
+    /// then put the text back while the clicks were still coming. Measured in probe/aboutdialog: two arms of
+    /// one 60 ms timer ticked twice as often, not once.
+    /// </summary>
+    private static void RearmClock()
+    {
+        if (_clockId != IntPtr.Zero) Native.KillTimer(IntPtr.Zero, _clockId);
+        _clockId = Native.SetTimer(IntPtr.Zero, EggClockTimer, EggBackMs, _clockProc!);
+    }
+
+    /// <summary>
+    /// Plays what a click left behind: the click itself, so that a click that missed the icon says so and
+    /// where it was, and one step of the code. One tick and it is over, which is why the timer is killed by
+    /// the id it came in with before anything else happens here.
+    /// </summary>
+    private static void OnEggWrite(IntPtr hwnd, uint msg, IntPtr id, uint time)
+    {
+        Native.KillTimer(IntPtr.Zero, id);
+        _writeId = IntPtr.Zero;
+        if (_dlg == IntPtr.Zero) return;
+
+        if (_clickOnIcon >= 0)
+        {
+            Log.Write($"about: click at ({_clickX},{_clickY}) in the client area - " +
+                      (_clickOnIcon == 1
+                          ? $"on the icon, egg {_egg}/{Egg.Length}"
+                          : "not on the icon, which is what the cell in the log line above is for"));
+            _clickOnIcon = -1;
+        }
+        if (_egg > 0) Instruction(Egg.Substring(0, _egg));
+    }
+
+    /// <summary>
+    /// The two seconds are up: the box goes back to saying what it said.
+    ///
+    /// A click during the launch-ad code's own reaction is not reconciled with it - whichever of the two wrote
+    /// last is what is on screen, and the next key of the code or this reset puts it back. Both are thirteen
+    /// steps long and neither is done in the other's company.
+    /// </summary>
+    private static void OnEggClock(IntPtr hwnd, uint msg, IntPtr id, uint time)
+    {
+        Native.KillTimer(IntPtr.Zero, id);
+        _clockId = IntPtr.Zero;
+        if (_dlg == IntPtr.Zero) return;
+
+        _egg = 0;
+        Instruction(_instruction);
+        Log.Write("about: the egg is over; the box says what it said");
+    }
+
+    /// <summary>The one element the egg ever writes, which is the instruction the icon sits beside.</summary>
+    private static void Instruction(string text)
+        => Native.SendMessageTextW(_dlg, Native.TDM_SET_ELEMENT_TEXT,
+                                   (IntPtr)Native.TDE_MAIN_INSTRUCTION, text);
 }
 
