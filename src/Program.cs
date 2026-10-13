@@ -30,8 +30,8 @@ internal static class Program
     private static Watcher _watcher = null!;
 
     /// <summary>
-    /// Whether the logon task exists, cached so the tray menu opens instantly - schtasks takes tens of
-    /// milliseconds and the menu is built on every right click. Refreshed at start-up, on every right
+    /// Whether the start-up shortcut is there, cached so the tray menu opens instantly - the check is
+    /// one file read and the menu is built on every right click. Refreshed at start-up, on every right
     /// click, and after a change.
     /// </summary>
     internal static bool AutoStartOn;
@@ -232,12 +232,10 @@ internal static class Program
         // post its frame ticks to.
         _anim.Start(_host.Hwnd);
 
-        // The logon task is read once here. ShowMenu must not run schtasks on every right click.
-        // The exit code and output go to the log because "there is no task" and "schtasks could
-        // not be run at all" both come out as false, and only one of them is worth worrying about.
-        int autoRc = AutoStart.Query(out string autoOut);
-        AutoStartOn = autoRc == 0;
-        Log.Write($"autostart={AutoStartOn} (schtasks rc={autoRc}) {autoOut.Trim()}");
+        // The start-up shortcut is read once here. ShowMenu must not read a file on every right click,
+        // and IsEnabled logs what it found either way, including what it was looking for when the
+        // shortcut exists but names something else.
+        AutoStartOn = AutoStart.IsEnabled();
 
         // Running means working, and exiting means not working: there is deliberately no paused
         // state, because a menu item that silently turns the program off is a support question.
@@ -425,11 +423,12 @@ internal static class Program
     ///
     /// Asked of the same function that decides whether the menu's logon-ad entry can be clicked, rather than of
     /// a second copy of its conditions: a program whose menu says the switch is frozen must not then run one
-    /// anyway, and the two going out of step is a mistake this codebase has already made once with the logon
-    /// task.
+    /// anyway, and the two going out of step is a mistake this codebase has already made once with the start-up
+    /// shortcut.
     ///
     /// <paramref name="forced" /> skips those conditions and nothing else - the Debug menu's entry runs one
-    /// however the logon task and the logon-advertisement switch are set, because looking at the advertisement
+    /// however the start-up shortcut and the logon-advertisement switch are set, because looking at the
+    /// advertisement
     /// is the only thing that entry is for. What it cannot skip is the folder being empty, which is the one
     /// condition that is not a setting but a fact, and the submenu being hidden - see Ads.Allowed, which is a
     /// rule about the two switches rather than one of their conditions.
@@ -601,21 +600,43 @@ internal static class Program
             case MenuLangZh: _s.Language = Lang.ChineseSimplified; Strings.Use(_s.Language); _s.Save(); break;
             case MenuAutoStart:
             {
-                // Reconcile first, act second. The check mark can be stale - the task may have been
-                // created or removed by something else since the menu was drawn - so if the display
-                // disagrees with reality, the click's job is to correct the display, and no
-                // schtasks command is run at all. Only when the display was accurate is the click
-                // read as "I want the opposite of this".
+                // Reconcile first, act second. The check mark can be stale - the shortcut may have
+                // been written or deleted by something else since the menu was drawn - so if the
+                // display disagrees with reality, the click's job is to correct the display, and
+                // nothing is written or deleted at all. Only when the display was accurate is the
+                // click read as "I want the opposite of this".
                 bool shown = AutoStartOn;
                 bool real = AutoStart.IsEnabled();
                 if (real != shown)
                 {
-                    Log.Write($"autostart: menu showed {shown}, task is {real}; correcting the menu only");
+                    Log.Write($"autostart: menu showed {shown}, the shortcut is {real}; correcting the menu only");
                     AutoStartOn = real;
                     break;
                 }
 
                 bool wanted = !real;
+
+                // A shortcut is already there under our name and it is not ours. Two ways that happens and they
+                // cannot be told apart from the bytes: something else put a file there, or this program has been
+                // moved or renamed since it wrote one and what is left is its own stale copy. Either way the
+                // write below would replace a file this program did not just write, so it is asked about rather
+                // than done -- the answer that is guessed at when the question cannot be asked at all is the one
+                // that writes nothing; see Native.Ask.
+                //
+                // Asked rather than reconciled, so the shortcut is left alone on a "no" and the menu stays as it
+                // was: the check mark already says off, and off is still true afterwards, so there is nothing to
+                // correct. Not the reconcile branch above, which is about a display that disagrees with reality.
+                if (wanted && AutoStart.Conflicts())
+                {
+                    bool overwrite = Native.Ask(Strings.T("AutoStartConflictTitle"),
+                                                Strings.T("AutoStartConflict"),
+                                                "", Strings.T("AutoStartOverwrite"),
+                                                Strings.T("AutoStartCancel"), Native.TD_ERROR_ICON);
+                    Log.Write($"autostart: a shortcut is already there and is not ours; the user said " +
+                              $"{(overwrite ? "overwrite" : "leave it alone")} ({Native.AskNote ?? "as asked"})");
+                    if (!overwrite) break;
+                }
+
                 string err;
                 bool now = AutoStart.Apply(wanted, out err);
                 if (now != wanted)
@@ -983,14 +1004,14 @@ internal sealed class TrayHost
     /// <summary>Opens the tray menu. Public because the About box's launch-ad code ends by asking for it.</summary>
     public void ShowMenu()
     {
-        // Re-checked here and not only at start-up: the task can be removed by anything else on the
-        // machine - Task Scheduler, another user, a cleanup tool - and a check mark that disagrees
-        // with reality is worse than none at all. Costs one schtasks run, tens of milliseconds,
-        // before the menu appears.
-        // IsEnabled, NOT the bare existence query. The menu and the click handler have to use the
-        // same definition: when the menu used existence alone and the handler used the full field
-        // check, the two disagreed, so every click concluded the display was stale and corrected
-        // the menu instead of ever reaching the create or delete.
+        // Re-checked here and not only at start-up: the shortcut can be deleted by anything else on the
+        // machine - the user, a cleanup tool, Task Manager's Start-up tab - and a check mark that
+        // disagrees with reality is worse than none at all. Costs one file read before the menu appears,
+        // which is what is left of what used to be two schtasks calls.
+        // IsEnabled, NOT a bare existence check. The menu and the click handler have to use the
+        // same definition: when the menu used existence alone and the handler used the full check,
+        // the two disagreed, so every click concluded the display was stale and corrected
+        // the menu instead of ever reaching the write or the delete.
         Program.AutoStartOn = AutoStart.IsEnabled();
 
         IntPtr menu = Native.CreatePopupMenu();

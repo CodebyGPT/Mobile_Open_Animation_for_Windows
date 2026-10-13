@@ -687,6 +687,16 @@ internal static class Native
     /// </summary>
     public static readonly IntPtr TD_INFORMATION_ICON = (IntPtr)0xFFFD;
 
+    /// <summary>
+    /// TD_ERROR_ICON, the red X, on the same terms as TD_INFORMATION_ICON above: -4 as a MAKEINTRESOURCE is the
+    /// WORD 0xFFFC, and the field is read as an HICON unless TDF_USE_HICON_MAIN says otherwise.
+    ///
+    /// It is here rather than at the call site because no caller has any business knowing what a MAKEINTRESOURCE
+    /// is, and because this is a choice the program makes rather than a value it looks up: a question is the blue
+    /// i, and something the user has to decide about because it is already wrong is the red X.
+    /// </summary>
+    public static readonly IntPtr TD_ERROR_ICON = (IntPtr)0xFFFC;
+
     /// <summary>TDF_USE_HICON_MAIN: the main icon field is a handle this caller owns, not a resource value.</summary>
     public const uint TDF_USE_HICON_MAIN = 0x0002;
 
@@ -755,10 +765,12 @@ internal static class Native
     /// be shown at all - is the second answer. The one caller is a program about to write a file into the folder
     /// it was started from, so the answer that has to be guessed at is the one that writes nothing.
     /// </summary>
-    public static bool Ask(string caption, string question, string advice, string yes, string no)
+    public static bool Ask(string caption, string question, string advice, string yes, string no,
+                           IntPtr mainIcon = default)
     {
         AskNote = null;
         const int Yes = 100, No = 101;
+        bool error = mainIcon == TD_ERROR_ICON;
         var buttons = new[]
         {
             new TASKDIALOG_BUTTON { NButtonID = Yes, PszButtonText = yes },
@@ -786,9 +798,10 @@ internal static class Native
                 DwFlags = TDF_ALLOW_DIALOG_CANCELLATION,
                 DwCommonButtons = 0,                 // the two below are the whole of what it offers
                 PszWindowTitle = caption,
-                // The blue i, which is what this dialog is: a question about the folder, not a fault. Same
-                // MAKEINTRESOURCE value as the About box's, and no TDF_USE_HICON_MAIN - see TD_INFORMATION_ICON.
-                MainIcon = TD_INFORMATION_ICON,
+                // The blue i unless the caller asked for the red X: this is a question about the folder, or a
+                // question about something that is already wrong. Same MAKEINTRESOURCE values as the About box's,
+                // and no TDF_USE_HICON_MAIN - see TD_INFORMATION_ICON.
+                MainIcon = error ? TD_ERROR_ICON : TD_INFORMATION_ICON,
                 PszMainInstruction = question,
                 PszContent = advice,
                 CButtons = (uint)buttons.Length,
@@ -817,10 +830,11 @@ internal static class Native
         // that never asked for that version has no such entry point at all - which is what happened to the first
         // version of this, and what the probe could not see until it was given the manifest the program carries.
         // The two buttons then say OK and Cancel, the system's own names for the same two answers: the fallback is
-        // not a lesser question, it is the same one in older clothes, and it is still asked rather than skipped.
+        // The icon comes with it, because the fallback is allowed to be a plainer question and not a less alarming
+        // one: a fault the user has to decide about is the red X here too.
         AskNote ??= "the task dialog was not available";
         return MessageBoxW(IntPtr.Zero, $"{question}{Environment.NewLine}{Environment.NewLine}{advice}",
-                           caption, MB_OKCANCEL) == IDOK;
+                           caption, MB_OKCANCEL | (error ? MB_ICONERROR : 0)) == IDOK;
     }
 
     /// <summary>
@@ -831,8 +845,9 @@ internal static class Native
     /// </summary>
     public static string? AskNote;
 
-    /// <summary>MB_OKCANCEL: the fallback's two buttons, which answer IDOK and IDCANCEL.</summary>
-    public const uint MB_OKCANCEL = 0x00000001;
+    /// <summary>MB_OKCANCEL: the fallback's two buttons, which answer IDOK and IDCANCEL. MB_ICONERROR beside it is
+    /// the red X, so that the fallback shows the same fault the task dialog would.</summary>
+    public const uint MB_OKCANCEL = 0x00000001, MB_ICONERROR = 0x00000010;
 
     /// <summary>
     /// Reads the dialog's own buttons back once they exist, and writes down any that did not come out as they

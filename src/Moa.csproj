@@ -57,5 +57,12 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Drawing" />
+    <!-- For the "dynamic" binder, and the only thing in the program that uses it: the late-bound COM
+         member access in AutoStart.Write, which is how a shortcut gets written. It is a .NET Framework
+         assembly that ships with Windows 10 and 11, so referencing it costs nothing at deployment - and
+         it is a reference rather than a package, so nothing is fetched to build either. The alternative
+         was reflection through InvokeMember on the COM object's own type, which is the same call spelled
+         out in a way that reads like a mistake. -->
+    <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
 </Project>

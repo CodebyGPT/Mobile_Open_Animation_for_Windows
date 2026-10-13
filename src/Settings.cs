@@ -266,8 +266,8 @@ internal sealed class Settings
         sb.AppendLine("; Mobile Open Animation for Windows - window open animation, standalone");
         sb.AppendLine("; The tray menu edits the entries marked [menu]; edit the rest here.");
         sb.AppendLine("; NOTE: Start with Windows is deliberately NOT stored in this file. The state is");
-        sb.AppendLine("; whether the scheduled task exists, read from the Task Scheduler, and a copy here");
-        sb.AppendLine("; could only ever disagree with it.");
+        sb.AppendLine("; whether the shortcut in your own Startup folder exists and points at this");
+        sb.AppendLine("; program, read from that shortcut, and a copy here could only ever disagree with it.");
         sb.AppendLine();
         sb.AppendLine("[general]");
         // This line is the whole reason settings survive a restart: Load regenerates the file from
@@ -471,9 +471,28 @@ internal static class Strings
         ["DebugMode"]    = ("Debug mode", "调试模式"),
         ["DebugEnable"]  = ("Enable", "启用"),
         ["DebugBootAd"]  = ("Play the logon ad now", "立即播放开机全屏广告"),
+        // Where the setting actually lives, said in the message that reports it failing: it is a shortcut in the
+        // user's own Startup folder, and a user who is told that can create or delete it by hand - which is the
+        // whole reason this is a shortcut instead of a scheduled task. shell:startup is the shell's own way of
+        // opening that folder, and it is the same folder AutoStart.ShortcutPath asks the shell for.
         ["AutoStartFailed"] =
-            ("Could not change the Start with Windows setting, so it has been left as it was.",
-             "无法修改开机自启设置，已保持原状。"),
+            ("Could not change the Start with Windows setting, so it has been left as it was.\n\n" +
+             "It is a shortcut in your own Startup folder: open Start and type shell:startup to see it, " +
+             "and add or delete it there by hand.",
+             "无法修改开机自启设置，已保持原状。\n\n" +
+             "它就是你「启动」文件夹里的一个快捷方式：打开「开始」菜单输入 shell:startup 即可看到，" +
+             "可以在那里手动添加或删除。"),
+        // Asked before a start-up shortcut is written over one that is already there under the same name and is
+        // not ours. Four strings because the question has two answers of the program's own naming, so it goes
+        // through Native.Ask rather than a message box: a message box's two buttons say OK and Cancel and cannot
+        // be made to say Overwrite and Cancel.
+        ["AutoStartConflictTitle"] = ("Startup entry conflict", "启动项存在冲突"),
+        ["AutoStartConflict"] =
+            ("A shortcut with the same name is already in shell:startup, but it points somewhere other than " +
+             "where this program is. Overwrite it?",
+             "shell:startup 已存在同名的快捷方式，但指向的不是当前程序所在的位置，是否覆盖？"),
+        ["AutoStartOverwrite"] = ("Overwrite", "覆盖"),
+        ["AutoStartCancel"]    = ("Cancel", "取消"),
         ["AdminRequired"] =
             ("Mobile Open Animation for Windows must run as an administrator.\n\n" +
              "Without it, Windows' user interface privilege isolation stops this program from\n" +
