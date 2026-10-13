@@ -1,20 +1,28 @@
 // The card an advertisement is shown on: a borderless window that plays a video inside itself, with a mute
-// control and a countdown, and goes away when the countdown runs out - or, on the logon advertisement, when it
-// is clicked.
+// control, a countdown and the name of what is playing, and goes away when the countdown runs out - or when one
+// of those controls is clicked.
 //
 // It is used for two things in this feature, and they differ only in where it appears:
 //
-//   * the logon advertisement, which grows out of the middle of the screen until it covers it;
-//   * the window advertisement, which has no grow of its own - the opening animation has already done the
-//     growing, and the card takes over the rectangle it stopped at.
+//   * the logon advertisement, which covers the primary screen;
+//   * the window advertisement, which takes over the rectangle the opening animation stopped at.
 //
 // The window itself does nothing clever. The video is Media Foundation's, drawn into a child window of its own
 // (see Media.cs); what is here is the part that is ours - where it appears, what it says, and when it goes.
 //
-// Five decisions worth writing down, because each of them is the opposite of the obvious one:
+// Seven decisions worth writing down, because each of them is the opposite of the obvious one:
+//
+//   * It does not animate. It appears where it belongs the moment it is made and leaves by fading out where it
+//     stands. Both ends used to be a movement - a logon card grew out of the middle of the screen, and both
+//     kinds collapsed into a small square and rounded off into a disc as they went - and everything that
+//     movement dragged in went with it: a region recomputed on every frame, a frame rate to report, a clock to
+//     sample, a shape to arrive in that the card being covered had to agree with. An advertisement is not one
+//     of the animations this program exists to draw, and it reads better as a card that is simply there and
+//     then is not. The one piece of the old movement worth keeping is the fade at the end, which is now the
+//     whole of the way out; see Fade.
 //
 //   * WS_EX_NOACTIVATE. An advertisement that takes the foreground takes the keyboard with it, so whatever the
-//     user was typing into stops receiving it. The card is shown with SW_SHOWNOACTIVATE and never activates.
+//     user was typing into stops receiving it. The card is created visible and never activates.
 //   * The controls are windows of their own, owned by the card rather than children of it, and they are drawn
 //     by Capsule rather than by the system. Measured: a child is not visible over the video whatever its
 //     z-order, and a BUTTON takes the click so the card never hears it - which made pressing mute dismiss the
@@ -27,8 +35,11 @@
 //     by whoever holds the capture - see Released.
 //   * The countdown is counted from a deadline rather than by decrementing on each tick. A timer is not
 //     guaranteed its interval, and a countdown that drifts is a countdown that lies about how long is left.
-//   * The card is shown, not asked to show itself: nothing else ever makes this window visible, and the one
-//     kind with no grow of its own had nothing that did. See the WS_VISIBLE below.
+//   * The card is shown, not asked to show itself: nothing else ever makes this window visible. The logon card
+//     used to show itself a frame at a time because every step of its grow was a SetWindowPos with
+//     SWP_SHOWWINDOW, and the window card had nothing that did - it sat hidden for the whole countdown, and the
+//     only thing that ever made it appear was the shrink at the end of it. With nothing moving there is no
+//     step to show it either, so the style is the whole of it. See the WS_VISIBLE below.
 //
 // probe/media drives all of this for real, so it can be looked at without the elevated tray program.
 
@@ -92,28 +103,16 @@ internal sealed class AdsCard
     public static string SearchUrl = "https://www.google.com/search?q=";
 
     /// <summary>
-    /// How the card goes away, how long it takes, and the shape it wears while it is up.
+    /// The frame the fade is stepped at, and the corner the card wears while it is up.
     ///
-    /// All of them come from the program, because all of them are decisions it has already made about its own
-    /// cards: the animation length in the ini, the frame from the display, the dynamic-corner switch, and the
-    /// corner radius the opening animation settled on - which is the shape the card arrives in, and therefore
-    /// the shape the advertisement over it has to be. The card cannot read any of them and a second answer here
-    /// would be a second thing to keep in step. probe/media sets its own.
+    /// Both come from the program, because both are decisions it has already made about its own cards: the frame
+    /// from the display, and the corner radius from the opening animation the window advertisement takes over -
+    /// which is the shape the card arrived in, and therefore the shape the advertisement over it has to be. Zero
+    /// for the logon advertisement, whose card is its own and which has nothing to line up with. The card cannot
+    /// read either of them and a second answer here would be a second thing to keep in step. probe/media sets
+    /// its own.
     /// </summary>
-    public static int CollapseMs = 200, FrameMs = 16, Radius;
-    public static bool RoundOff = true;
-
-    /// <summary>
-    /// The curve everything here moves on, handed over by the program so that a card arriving and a card
-    /// leaving are the same movement as the panels around them - one curve, one place, and no second copy to
-    /// keep in step. Null in a caller that has no opinion, which gets the cubic this used to carry.
-    ///
-    /// The collapse plays it backwards, which is what the program's own closing cards do and for the reason
-    /// its comment gives: run forwards, almost the whole shrink lands in the first third of the duration and a
-    /// small square then sits there for the rest of it, which reads as collapsing instantly and then vanishing
-    /// - which is exactly what was reported here.
-    /// </summary>
-    public static Func<double, double>? Curve;
+    public static int FrameMs = 16, Radius;
 
     /// <summary>
     /// Called once when the card is gone. The window advertisement keeps the window it covers hidden for as long
@@ -130,25 +129,21 @@ internal sealed class AdsCard
     public Action? WhileUp;
 
     private const string ClassName = "MoaAdsCard";
-    private const int GrowMs = 260, StepMs = 16, HoldMs = 60;
+    private const int StepMs = 16, HoldMs = 60, FadeMs = 160;
     private static readonly IntPtr StepTimer = (IntPtr)1;
 
     /// <summary>
-    /// When the card's animations measure from.
+    /// When the card's own movements measure from - the fade and the countdown, and nothing else.
     ///
     /// <see cref="Environment.TickCount" /> moves in steps of about 15.6 milliseconds - it is the system timer's
-    /// tick, not a millisecond counter - and an animation sampled from it has thirteen places to be in a
-    /// two-hundred-millisecond collapse whatever rate it is asked for. At the sixteen milliseconds a step this
-    /// used to ask for, that was invisible: one step per tick, one place per step. Asking for a frame every six
-    /// milliseconds, which is what this monitor's own refresh rate works out to, makes it visible: the same
-    /// place is drawn two frames in three and then the card jumps a tick's worth, which is a movement that
-    /// stutters while every frame of it is drawn on time. Reported as the collapse being less smooth than it
-    /// was, and it is the only thing in this file that changed about it.
+    /// tick, not a millisecond counter - and a fade sampled from it moves in thirteen steps whatever rate it is
+    /// asked for: the same opacity is drawn two frames in three and then the card jumps a tick's worth, which is
+    /// a fade that stutters while every frame of it is drawn on time. That is what a coarse clock does to a
+    /// movement, and it was reported as the collapse being less smooth than it had been.
     ///
     /// A Stopwatch is the system's high-resolution counter and moves in microseconds, so a step that lands early
-    /// lands a little early and one that lands late lands a little late, which is what an animation wants. The
-    /// countdown is on it too: it counts whole seconds and does not care, but one clock read by two things is
-    /// one place to look rather than two.
+    /// lands a little early and one that lands late lands a little late. The countdown is on it too: it counts
+    /// whole seconds and does not care, but one clock read by two things is one place to look rather than two.
     /// </summary>
     private static readonly Stopwatch Clock = Stopwatch.StartNew();
     private static long Now => Clock.ElapsedMilliseconds;
@@ -172,19 +167,13 @@ internal sealed class AdsCard
 
     /// <summary>How wide the name capsule may be, in pixels, or 0 before the style is known.</summary>
     private int _labelCeiling;
-    private RECT _full, _small;
-    private int _startedAt, _capSeconds, _collapseAt, _alpha = 255, _corner, _frames, _moved, _frame = 16;
-
-    /// <summary>Where the last animated frame put the card, so that a frame with nowhere to go can be counted.</summary>
-    private int _lastL = int.MinValue, _lastT, _lastW, _lastH;
-
-    /// <summary>When the last step arrived, and how far apart the steps of the current movement were.</summary>
-    private long _lastStep, _gap, _gapMin, _gapMax;
+    private RECT _full;
+    private int _capSeconds, _fadeAt, _frame = 16;
     private int _fitX = int.MinValue, _fitY, _fitW, _fitH;   // where the video window was last put
     private uint _timerMs;                                   // the interval the step timer is at
     private long _deadline;              // when the countdown reaches zero, 0 until the player has said how long
     private int _shownSeconds = -1;
-    private bool _muted, _closeAnimation, _shrinking, _done, _controls, _grow, _grown, _fitSaid;
+    private bool _muted, _closeAnimation, _closing, _done, _controls, _logon, _fitSaid;
 
     /// <summary>What the handover to the last frame took, and whether that has been written down yet.</summary>
     private bool _heldFrame, _heldSaid;
@@ -220,9 +209,8 @@ internal sealed class AdsCard
     /// </summary>
     internal MediaPlayer? Player => _player;
 
-    /// <summary>Where the card is, and where it would collapse back to, for a caller that moves it.</summary>
+    /// <summary>Where the card is, for a caller that moves it.</summary>
     internal RECT Place => _full;
-    internal RECT CollapsesInto => _small;
 
     /// <summary>The card's own window, for a caller that wants to put it somewhere in the Z-order.</summary>
     public IntPtr Hwnd => _hwnd;
@@ -245,15 +233,12 @@ internal sealed class AdsCard
     public static bool Showing => _open != null;
 
     /// <summary>
-    /// The logon advertisement: grows out of the middle of the primary screen until it covers it, and collapses
-    /// back into the middle of it.
+    /// The logon advertisement: covers the primary screen until its countdown runs out, or until it is clicked.
     ///
     /// (0,0) is the primary monitor's own corner, by definition and not by luck: the virtual desktop's origin
     /// can be negative when a monitor sits to the left of or above the primary one, but the primary itself
     /// always starts at the origin. So this is right on any arrangement of monitors, and the alternative -
-    /// covering the whole virtual desktop - would be a change rather than a repair, and a visible one: the card
-    /// grows out of the middle of what it is given, and the middle of a two-monitor desktop is the seam between
-    /// them.
+    /// covering the whole virtual desktop - would be a change rather than a repair.
     ///
     /// The screen rather than the work area, because an advertisement is meant to cover the screen, taskbar
     /// included.
@@ -264,20 +249,20 @@ internal sealed class AdsCard
             Left = 0, Top = 0,
             Right = Native.GetSystemMetrics(Native.SM_CXSCREEN),
             Bottom = Native.GetSystemMetrics(Native.SM_CYSCREEN),
-        }, grow: true);
+        }, logon: true);
 
     /// <summary>
-    /// The window advertisement: no grow of its own, because the opening animation has already grown a card to
-    /// exactly this rectangle and this one takes over where it stopped.
+    /// The window advertisement: it takes over exactly the rectangle the opening animation stopped at, with no
+    /// movement of its own.
     ///
     /// Returns null when there is nothing to show, which includes no files and a card already up. The card
     /// belongs to the caller's message loop from here: its timer arrives there, so the caller must be pumping.
     /// </summary>
     public static AdsCard? ShowOver(RECT rect, string[] files, int capSeconds, bool muted, bool closeAnimation)
-        => Show(files, capSeconds, muted, closeAnimation, rect, grow: false);
+        => Show(files, capSeconds, muted, closeAnimation, rect, logon: false);
 
     private static AdsCard? Show(string[] files, int capSeconds, bool muted, bool closeAnimation,
-                                 RECT full, bool grow)
+                                 RECT full, bool logon)
     {
         if (_open != null || files == null || files.Length == 0) return null;
         if (!Register()) return null;
@@ -290,41 +275,25 @@ internal sealed class AdsCard
             _muted = muted,
             _closeAnimation = closeAnimation,
             _capSeconds = capSeconds,
-            _grow = grow,
+            _logon = logon,
             _candidates = Shuffled(files),
             _full = full,
         };
 
-        // The square the card grows out of, and the one it collapses back into. Centred on the card's own
-        // rectangle either way: the logon advertisement grows out of the middle of the screen and returns to
-        // it, and the window advertisement grows out of the middle of the window it covers and returns to that.
-        // A card that went back to where the window was launched from was tried and taken out again: the
-        // advertisement is not the window, and following the window's own close animation read as the
-        // advertisement having somewhere else to be.
-        int seed = Math.Max(64, Math.Min(w, h) / 8);
-        card._small = new RECT
-        {
-            Left = (full.Left + full.Right - seed) / 2,
-            Top = (full.Top + full.Bottom - seed) / 2,
-            Right = (full.Left + full.Right + seed) / 2,
-            Bottom = (full.Top + full.Bottom + seed) / 2,
-        };
-
-        RECT start = grow ? card._small : full;
         card._hwnd = Native.CreateWindowExW(
-            // WS_EX_LAYERED from the start, at full opacity, so that the collapse can fade: a video can only
-            // be faded by fading the window it is drawn in, and a window made layered later has its surface
-            // rebuilt - a frame of flicker in the middle of the animation it was meant to smooth.
+            // WS_EX_LAYERED from the start, at full opacity, so that the card can fade on its way out: a video
+            // can only be faded by fading the window it is drawn in, and a window made layered later has its
+            // surface rebuilt - a frame of flicker in the middle of the fade it was meant to smooth.
             Native.WS_EX_TOPMOST | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_LAYERED,
             ClassName, "Mobile Open Animation",
-            // WS_VISIBLE is not decoration here, it is the whole of the window advertisement working. The
-            // logon card grows from a square to the full screen and every step of that grow is a
-            // SetWindowPos with SWP_SHOWWINDOW, so it showed itself. The window card has no grow of its own,
-            // and nothing else ever showed it: the card sat hidden for the whole countdown, and the only
-            // thing that ever made it visible was the shrink at the end of it. The controls were the one
-            // part that appeared, because they are shown one at a time below.
+            // WS_VISIBLE is not decoration here, it is the whole of the card appearing: nothing else ever makes
+            // this window visible, and since nothing about it moves there is no step with SWP_SHOWWINDOW in it
+            // either. The logon card used to show itself a frame at a time that way, and the window card had
+            // nothing at all: it sat hidden for the whole countdown, and the only thing that ever made it
+            // appear was the shrink at the end of it. The controls were the one part that appeared, because
+            // they are shown one at a time below.
             Native.WS_POPUP | Native.WS_CLIPCHILDREN | Native.WS_VISIBLE,
-            start.Left, start.Top, start.Right - start.Left, start.Bottom - start.Top,
+            full.Left, full.Top, w, h,
             IntPtr.Zero, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
         if (card._hwnd == IntPtr.Zero) return null;
         Native.SetLayeredWindowAttributes(card._hwnd, 0, 255, Native.LWA_ALPHA);
@@ -336,36 +305,27 @@ internal sealed class AdsCard
         // presents straight into it and paints over everything in it. With the picture confined to a child the
         // controls can be its siblings and stay above it.
         card._videoHost = Native.CreateWindowExW(0, "STATIC", "", Native.WS_CHILD | Native.WS_VISIBLE,
-            0, 0, start.Right - start.Left, start.Bottom - start.Top,
-            card._hwnd, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
+            0, 0, w, h, card._hwnd, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
         if (card._videoHost == IntPtr.Zero) { Native.DestroyWindow(card._hwnd); return null; }
 
-        // The shape it arrives in. The opening animation's card ended at a corner radius - the window's own on
-        // Windows 11, square elsewhere - and the advertisement takes over that rectangle, so it wears the same
-        // corner: a hard square appearing where a rounded card was is the one seam the fade cannot hide. Free,
-        // because it is the same region the collapse at the other end already uses.
-        //
-        // A card that grows starts as a disc, and with the switch off it does not: the disc is the dynamic part
-        // of the corner, and with the switch off there is nothing dynamic about it - the card arrives at, and
-        // keeps, the corner the collapse would have ended on. See Animate, which keeps it there for the whole
-        // grow; the two have to agree, because the region is only set where it is changed.
-        int startW = start.Right - start.Left, startH = start.Bottom - start.Top;
-        if (!grow) Round(card, w, h);
-        else Round(card, startW, startH, RoundOff ? startW / 2 : Radius);
+        // The shape it wears. The opening animation's card ended at a corner radius - the window's own on
+        // Windows 11, square elsewhere - and the window advertisement takes over that rectangle, so it wears the
+        // same corner: a hard square appearing where a rounded card was is the one seam the fade cannot hide.
+        // The logon advertisement is handed a radius of nothing, because it covers the screen and has no card to
+        // line up with; the radius is the program's to decide and this is only where it is applied.
+        Round(card._hwnd, w, h);
 
         _open = card;
-        card._startedAt = (int)Now;
-        // A card that grows asks for a frame every frame, and the system's clock has to be asked for a fine
-        // enough one to give it: without that a sixteen millisecond timer lands on the next fifteen and a half
-        // millisecond tick instead, which is every other one, and a card animating at half its intended rate is
-        // what was reported. The program's own animation thread raises it once and never lowers it, so inside
-        // the program this is only ever the first animation - which is the logon advertisement, the one that
-        // runs before anything else has had a chance to.
-        if (grow) Native.TimeBeginPeriod(1u);
+        // The card asks for a frame every frame while it is fading, and the system's clock has to be asked for a
+        // fine enough one to give it: without that a six millisecond timer lands on the next fifteen and a half
+        // millisecond tick instead, which is every other one, and a fade animating at half its intended rate is
+        // what the countdown's own steps used to be before this was added. The program's own animation thread
+        // raises it once and never lowers it, so inside the program this is only ever the first advertisement.
+        Native.TimeBeginPeriod(1u);
         card._frame = MonitorFrameMs(card._hwnd, FrameMs);
-        card.Timer(grow ? card._frame : StepMs);
+        card.Timer(StepMs);         // nothing to move at speed yet; the countdown is whole seconds
         card.Next();
-        Say($"ads: card 0x{card._hwnd:X} {(grow ? "growing" : "placed")} at " +
+        Say($"ads: card 0x{card._hwnd:X} ({(logon ? "logon" : "window")}) at " +
             $"{full.Left},{full.Top} {w}x{h}");
         return card;
     }
@@ -420,59 +380,30 @@ internal sealed class AdsCard
     private void Step()
     {
         WhileUp?.Invoke();
-
-        // How far apart the steps really are, measured from the steps themselves rather than from the interval
-        // that was asked for. A card asks the system for a frame every six milliseconds and the system is not
-        // obliged to give it one: WM_TIMER is generated only when the queue has nothing else in it, and this
-        // window's queue is shared with the video player's own messages. Which of the two it is matters - a
-        // frame that arrives late with the right time on it is a frame in the right place, while a frame that
-        // arrives late because the timer was never going to fire is a movement sampled at whatever rate the
-        // message traffic happens to have, and that one cannot be fixed by keeping better time. Written down
-        // because "the animation stutters" cannot be answered at all without it.
         long now = Now;
-        if (_lastStep != 0)
-        {
-            long gap = now - _lastStep;
-            if (_gap == 0 || gap < _gapMin) _gapMin = gap;
-            if (gap > _gapMax) _gapMax = gap;
-            _gap++;
-        }
-        _lastStep = now;
 
-        if (_shrinking)
+        if (_closing)
         {
-            // The first frame is given a moment to actually be drawn before anything moves: see Close.
-            if (Now < _collapseAt) return;
+            // The fade is given a moment before it starts, to let the last frame put up by Close actually be
+            // drawn: see there.
+            if (now < _fadeAt) return;
             // And what the handover to the last frame did is said here rather than where the seek was asked for.
             // mfplay's SetPosition is asynchronous, so a position read in the same breath is the position
             // playback was at and not the one it was sent to: measured, a card whose countdown cut a file short
             // logged a landing of 1726 ms where it had asked for 14978, and the whole point of the line is that
-            // it can be believed. By this step the seek has had the sixty milliseconds Close gave it.
+            // it can be believed.
             if (!_heldSaid)
             {
                 _heldSaid = true;
                 Say($"ads: the last frame is up: {_heldFrame}, landed at {_player?.PositionMs ?? -1} ms of " +
                     $"{_player?.DurationMs ?? -1}");
             }
-            if (!Animate(_full, _small, _collapseAt, CollapseMs)) return;
-            ReportFrames("collapse", _collapseAt);
+            if (!Fade()) return;
             _done = true;
             Native.DestroyWindow(_hwnd);
             return;
         }
 
-        // The grow happens once, and the flag is what makes it once. The return value used to be thrown away,
-        // so the last frame of the grow was drawn again on every step for the whole life of the card - and
-        // since each of those frames ends in FitVideo, that was the video's window being resized, and the
-        // player told about it, sixty times a second over a video that was already playing. Reported as the
-        // full-screen advertisement stuttering, which is exactly what that is.
-        if (_grow && !_grown)
-        {
-            if (!Animate(_small, _full, _startedAt, GrowMs)) { WatchPlayer(); return; }
-            _grown = true;
-            ReportFrames("grow", _startedAt);
-            Timer(StepMs);            // nothing left to move at speed; the countdown is whole seconds
-        }
         if (!_controls) MakeControls();
 
         // The cursor is asked where it is rather than told, and this is the only place it is asked. A mouse
@@ -482,15 +413,15 @@ internal sealed class AdsCard
         if (_pressOn == IntPtr.Zero) Look();
 
         // The name capsule's search glyph, swinging on the card's own clock and on the card's own steps: a timer
-        // of its own would be a second thing timing the same advertisement, and the card is stepping sixty times
-        // a second while it is up anyway. What is being told is only the angle - what the capsule says is set
-        // when the file changes, not here. See Capsule.Swing for the four numbers and the shape of the movement,
-        // and SetSpin, which does nothing at all on the steps where the angle has not moved.
+        // of its own would be a second thing timing the same advertisement, and the card is stepping while it is
+        // up anyway. What is being told is only the angle - what the capsule says is set when the file changes,
+        // not here. See Capsule.Swing for the four numbers and the shape of the movement, and SetSpin, which
+        // does nothing at all on the steps where the angle has not moved.
         _name?.SetSpin(Capsule.Swing(now));
         WatchPlayer();
 
         if (_deadline == 0) return;
-        long left = _deadline - Now;
+        long left = _deadline - now;
         if (left <= 0) { Say("ads: the countdown reached zero"); Close(); return; }
 
         int seconds = (int)((left + 999) / 1000);
@@ -535,127 +466,51 @@ internal sealed class AdsCard
     }
 
     /// <summary>
-    /// Moves the window along an eased path from one rectangle to the other. False while there is still path
-    /// left to travel, true on the step that arrives.
+    /// Takes the card's opacity down over <see cref="FadeMs" /> and says whether it is gone. False while there is
+    /// any of it left to take down.
+    ///
+    /// A layered window is the only way a window with a video inside it can be faded at all, and the style is
+    /// set when the card is made rather than here: turning it on later makes the compositor build a new surface
+    /// for the window, which is a frame of flicker in the middle of the fade it was meant to smooth. The separate
+    /// windows the controls live in are hidden by the time this runs; a fade that left them floating over the
+    /// desktop would be worse than no fade.
+    ///
+    /// It is the whole of the way out, and it is deliberately the only thing left of the movement that used to be
+    /// here. A card that shrank as it went was one more thing to look at than the going away it was meant to be,
+    /// and everything that shrink needed went with it - the region recomputed on every frame, the shape it had to
+    /// arrive in, the curve, the frame-rate report. What is left is a card that is there and then is not.
+    ///
+    /// Linear, because at this length there is nothing to ease: measured at the two-hundred-and-forty
+    /// millisecond animation length the ini used to give it, a fade with a curve on it and one without are the
+    /// same four frames to the eye. It measures from the moment the fade started rather than from the last step,
+    /// so a step that arrives late fades a little more rather than fading late.
     /// </summary>
-    private bool Animate(RECT from, RECT to, int startedAt, int durationMs)
+    private bool Fade()
     {
-        double t = (Now - startedAt) / (double)durationMs;
+        double t = (Now - _fadeAt) / (double)FadeMs;
         if (t > 1) t = 1;
-        // Arriving plays the curve forwards and leaving plays it backwards, which is the difference between a
-        // card that settles into place and a card that goes back the way it came. Not a taste: forwards, a
-        // collapse is over in the first third of the time and the rest of it is a small square sitting still.
-        double e = Curve == null ? 1 - Math.Pow(1 - t, 3) : _shrinking ? 1 - Curve(1 - t) : Curve(t);
-        int l = (int)(from.Left + (to.Left - from.Left) * e);
-        int tp = (int)(from.Top + (to.Top - from.Top) * e);
-        int w = (int)((from.Right - from.Left) + ((to.Right - to.Left) - (from.Right - from.Left)) * e);
-        int h = (int)((from.Bottom - from.Top) + ((to.Bottom - to.Top) - (from.Bottom - from.Top)) * e);
-        Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, l, tp, w, h,
-                            Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
-
-        // Counted, because "the animation stutters" has two very different causes that look the same and are
-        // told apart by exactly this: a frame that could not be drawn in time, and a frame drawn in time that
-        // had nowhere to go because the clock under it had not moved. The second is what a coarse clock does - a
-        // step every six milliseconds sampled from a clock that ticks every fifteen lands on the same place
-        // twice in three - and it is not visible in a frame rate, only in this ratio. See Clock.
-        if (l != _lastL || tp != _lastT || w != _lastW || h != _lastH)
-        {
-            _moved++;
-            _lastL = l; _lastT = tp; _lastW = w; _lastH = h;
-        }
-
-        // The corners move on the same curve as the rectangle, so the rounding is part of one movement rather
-        // than a second one running beside it - which is what the program's own cards do, and the same switch
-        // decides it. A growing card starts as the roundest shape a card of its size can hold and straightens
-        // out into the corner it is meant to end on; a collapsing one goes the other way and ends as a disc.
-        // Both were missing at one point or the other: the logon advertisement grew as a hard square whatever
-        // the setting said, because the only card that ever got a corner was the window one, and it gets it
-        // once, at birth, having no grow of its own.
-        //
-        // The region is set on every frame of the movement, either way, and that is the whole of a report about
-        // the switch being off: nothing set it at all then, so the card kept the disc it was born as from the
-        // first frame to the last while the window around it grew to the whole screen - and a region is in the
-        // window's own coordinates, so as the window travelled to 0,0 the disc travelled with it and sat in the
-        // top-left corner of a full-screen card. Which is also why only the corner answered a click: a window's
-        // region is its shape for hit-testing as much as for painting. The video played and the controls hovered
-        // through all of it - the video is a child window, which a parent's region does not clip, and the hover
-        // is the card asking where the cursor is rather than being told - and nothing else did anything.
-        //
-        // With the switch off the corner is the fixed one the collapse ends on rather than a disc, which is the
-        // same reading of the switch the program's own animations use: the rounding does not animate, it stays
-        // the corner the window being covered has.
-        double half = Math.Min(w, h) / 2.0;
-        _corner = RoundOff
-            ? (int)Math.Round(_shrinking ? Radius + (half - Radius) * e : half + (Radius - half) * e)
-            : Radius;
-        Round(this, w, h, _corner);
-
-        // And the last of it fades, from the same point in the same curve the program's own closing cards
-        // fade from: holding its opacity while it is still large, then going quickly, so that what is left
-        // is a small disc dissolving rather than a small disc blinking out.
-        if (_shrinking) Fade(t);
-        else _alpha = 255;
-
-        FitVideo(w, h);
-        _frames++;
-        if (t >= 1 && _shrinking)
-            Say($"ads: gone at {w}x{h}, alpha {_alpha}, corner {_corner} of a possible {Math.Min(w, h) / 2}");
+        int alpha = (int)Math.Round(255 * (1 - t));
+        if (alpha < 0) alpha = 0;
+        Native.SetLayeredWindowAttributes(_hwnd, 0, (byte)alpha, Native.LWA_ALPHA);
         return t >= 1;
     }
 
     /// <summary>
-    /// How many frames a movement actually got through, and how many of them had anywhere to go. A movement is
-    /// asked for a frame every <c>_frame</c> milliseconds, and whether it gets them is a fact about the machine
-    /// rather than about this file: the card shares its thread with the message loop, the player draws into it,
-    /// and the compositor has the last word. Which of the two numbers was wrong is what tells a frame rate
-    /// problem apart from a clock one. Written down because a frame rate was reported as having dropped and
-    /// there was no number anywhere in the program to check that against.
-    /// </summary>
-    private void ReportFrames(string what, int startedAt)
-    {
-        int ms = (int)(Now - startedAt);
-        Say($"ads: the {what} drew {_frames} frames in {ms} ms = " +
-            $"{(ms <= 0 ? 0 : _frames * 1000 / ms)} fps, asked for one every {_frame} ms; " +
-            $"{_moved} of those frames moved the card, and the steps were {_gapMin} to {_gapMax} ms apart " +
-            $"over {_gap} of them");
-        _frames = 0;
-        _moved = 0;
-        _gap = 0;
-    }
-
-    /// <summary>
-    /// How solid the card is, in the last part of a collapse.
-    ///
-    /// A layered window is the only way a window with a video inside it can be faded at all, and the style is
-    /// set when the card is made rather than here: turning it on later makes the compositor build a new surface
-    /// for the window, which is a frame of flicker in the middle of an animation. The separate windows the
-    /// controls live in are hidden by then; a fade that left them floating over the desktop would be worse than
-    /// no fade.
-    /// </summary>
-    private void Fade(double t)
-    {
-        const double From = 0.70;
-        int alpha = t <= From ? 255 : (int)Math.Round(255 * (1 - (t - From) / (1 - From)));
-        if (alpha < 0) alpha = 0;
-        _alpha = alpha;
-        Native.SetLayeredWindowAttributes(_hwnd, 0, (byte)alpha, Native.LWA_ALPHA);
-    }
-
-    /// <summary>
-    /// Gives the card its corners, as a window region - which is the whole of both the shape it arrives in and
-    /// the shape it leaves in. A radius of half the shorter side is a disc, and that is the shape the collapse
-    /// ends on; the video child is clipped by it along with everything else, which is the part that had to be
-    /// measured rather than assumed.
+    /// Gives the card its corners, as a window region - once, when it is made, because nothing about the card
+    /// moves afterwards. A region is its shape for hit-testing as much as for painting, so this is also what the
+    /// mouse clicks against. The video child is clipped by it along with everything else, which is the part that
+    /// had to be measured rather than assumed.
     ///
     /// A radius of nothing means no region at all rather than a square one, so that a card that is not rounded
-    /// has nothing set on it to go wrong later.
+    /// has nothing set on it to go wrong later. Nothing here asks whether the rounding animates, because there is
+    /// nothing left to animate it on: the corner is the corner of the card this one took over.
     /// </summary>
-    private static void Round(AdsCard card, int w, int h, int radius = -1)
+    private static void Round(IntPtr hwnd, int w, int h)
     {
-        if (card._hwnd == IntPtr.Zero) return;
-        int r = radius < 0 ? Radius : radius;
-        Native.SetWindowRgn(card._hwnd,
-            r <= 0 ? IntPtr.Zero : Native.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2), true);
+        if (hwnd == IntPtr.Zero) return;
+        Native.SetWindowRgn(hwnd,
+            Radius <= 0 ? IntPtr.Zero : Native.CreateRoundRectRgn(0, 0, w + 1, h + 1, Radius * 2, Radius * 2),
+            true);
     }
 
     /// <summary>
@@ -907,7 +762,7 @@ internal sealed class AdsCard
         _pressOn = ControlAt(p);
         _pressAt = p;
         _dragging = false;
-        if (_pressOn == IntPtr.Zero && !_grow && Native.GetWindowRect(_hwnd, out var r))
+        if (_pressOn == IntPtr.Zero && !_logon && Native.GetWindowRect(_hwnd, out var r))
         {
             _grabX = p.X - r.Left;
             _grabY = p.Y - r.Top;
@@ -944,13 +799,13 @@ internal sealed class AdsCard
     }
 
     /// <summary>
-    /// Puts the whole advertisement somewhere else: the card, the video in it, the two controls that belong to
-    /// it, where it collapses back to, and - through <see cref="Moved" /> - the window it is standing in for.
+    /// Puts the whole advertisement somewhere else: the card, the video in it, the three controls that belong to
+    /// it, and - through <see cref="Moved" /> - the window it is standing in for.
     ///
     /// The video needs no telling. Its window is a child of the card's, so it comes along with it, and the fit
     /// is a rectangle inside the card rather than a place on the screen: FitVideo sees the same width and height
     /// and does nothing at all, which is what keeps a drag from re-laying-out the player's scaling sixty times a
-    /// second. What does need telling is the two controls, which are windows of their own, and the caller, whose
+    /// second. What does need telling is the three controls, which are windows of their own, and the caller, whose
     /// hidden window has to be dragged with the advertisement: an advertisement moved away from the window it is
     /// standing in for, with the window left where it was, gives the whole thing away the moment the
     /// advertisement ends and the window appears somewhere the user did not put it.
@@ -965,14 +820,6 @@ internal sealed class AdsCard
         if (dx == 0 && dy == 0) return;
 
         _full = new RECT { Left = left, Top = top, Right = left + w, Bottom = top + h };
-        // The square it collapses back into is the middle of where it is now, not of where it was: a
-        // dismissed advertisement that shrank towards the place it started from would fly across the screen on
-        // its way out.
-        _small = new RECT
-        {
-            Left = _small.Left + dx, Top = _small.Top + dy,
-            Right = _small.Right + dx, Bottom = _small.Bottom + dy,
-        };
         Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, left, top, w, h, Native.SWP_NOACTIVATE);
         _mute?.Move(dx, dy);
         _countdown?.Move(dx, dy);
@@ -1049,29 +896,30 @@ internal sealed class AdsCard
         }
 
         // The name capsule is a way out of the advertisement in the other direction: it says what this is, and
-        // pressing it looks that up. It comes before the two rules below because it is a control, and because a
-        // click on the logon card closes it - which would make the one control that does something else close
-        // the advertisement instead of searching.
+        // pressing it looks that up. It closes the card as well, on either kind, and that is the one rule here
+        // that was written twice before being made one: on the logon card it had to, because a card that covers
+        // the screen would be sitting in front of the browser it had just asked for, while the window card used
+        // to stay up on the argument that it only stands in for a window and its countdown is its way out. It is
+        // a control the user pressed to go somewhere else, and leaving the advertisement over what they asked
+        // for is the same mistake in miniature. It is checked before the rules below because it is a control, and
+        // because a click on the logon card closes it, which would make the one control that does something else
+        // close the advertisement instead of searching. The search is asked for before the close so that the URL
+        // has been handed over before the card starts taking itself down.
         if (On(NameControl, out var name, p))
         {
             Say($"ads: a click at {p.X},{p.Y} is on the name control " +
                 $"({name.Left},{name.Top} {name.Right - name.Left}x{name.Bottom - name.Top})");
-            // Search first, and then close - on the logon card only. That card covers the whole screen, so the
-            // browser it has just asked for is behind it and it has to go, which is what a click anywhere on it
-            // already does. The window advertisement is left alone by this: it stands in for a window the user was
-            // about to use, and its countdown is its way out. The search is asked for before the close so that the
-            // URL has been handed over before the card starts taking itself down.
             SearchTheName();
-            if (_grow) Close();
+            Close();
             return;
         }
 
-        // The two kinds of card go away differently, and that is the difference between them that matters most.
-        // The logon advertisement covers the screen and has nothing to type into, so a click anywhere closes it:
-        // it is in the way of everything and getting rid of it should cost one click. The window advertisement
-        // takes the place of a window the user was about to use, so a click meant for that window must not
-        // dismiss the advertisement instead - it is only the countdown that skips it.
-        if (_grow)
+        // The two kinds of card go away differently apart from that, and that is the difference between them that
+        // matters most. The logon advertisement covers the screen and has nothing to type into, so a click
+        // anywhere closes it: it is in the way of everything and getting rid of it should cost one click. The
+        // window advertisement takes the place of a window the user was about to use, so a click meant for that
+        // window must not dismiss the advertisement instead - it is only the countdown that skips it.
+        if (_logon)
         {
             Say($"ads: a click at {p.X},{p.Y} is on the logon card, so closing");
             Close();
@@ -1164,7 +1012,7 @@ internal sealed class AdsCard
     /// <summary>Starts the going-away, however it was asked for: the countdown, or a click.</summary>
     private void Close()
     {
-        if (_done || _shrinking) return;
+        if (_done || _closing) return;
         if (!_closeAnimation)
         {
             _done = true;
@@ -1172,44 +1020,34 @@ internal sealed class AdsCard
             Native.DestroyWindow(_hwnd);
             return;
         }
-        _shrinking = true;
-        _startedAt = (int)Now;
+        _closing = true;
 
-        // The controls go now rather than at the end. They are windows of their own, so a shrinking card
-        // leaves them behind - floating over the desktop at their old size for the length of the collapse -
-        // and a fading card would leave them opaque as well, which is the one thing that would give the fade
-        // away. They are made once and not remade, so this is the end of them for this card.
+        // The controls go now rather than with the fade. They are windows of their own and they are not layered,
+        // so a fading card would leave them sitting at full strength over the desktop - the one thing that would
+        // give the fade away. They are made once and not remade, so this is the end of them for this card.
         _mute?.Hide();
         _countdown?.Hide();
         _name?.Hide();
 
         // The last frame in place of whatever mfplay leaves on screen when playback has run out, which is
-        // nothing - a black card, and a black card is a worse thing to collapse than the advertisement itself.
-        // The last frame rather than the first, which is what this used to put up: the first frame of an
+        // nothing - a black card, and a black card is a worse thing to fade than the advertisement itself. The
+        // last frame rather than the first, which is what this used to put up: the first frame of an
         // advertisement is the one frame of it that belongs to nothing the user has been watching. See
         // MediaPlayer.HoldLastFrame.
         //
-        // And then a couple of frames of standing still before the collapse starts, because the seek does not
-        // put the frame on screen the instant it returns: seeking and collapsing in the same breath is a
-        // collapse over the black the seek was meant to remove, which is what it looked like the first time.
-        // What it landed on is logged by the first step of the collapse, not here; see Step.
+        // And then a couple of frames of standing still before the fade starts, because the seek does not put
+        // the frame on screen the instant it returns: seeking and fading in the same breath is a fade over the
+        // black the seek was meant to remove. What it landed on is logged by the first step of the fade, not
+        // here; see Step.
         _heldFrame = _player?.HoldLastFrame() ?? false;
-        _collapseAt = (int)Now + HoldMs;
-        // The step spacings start again here, so that the collapse's report is about the collapse: what is being
-        // asked is how evenly the shrink was sampled, and the sixteen-millisecond countdown steps before it are
-        // a different question with a different answer.
-        _lastStep = 0;
-        _gap = 0;
+        _fadeAt = (int)Now + HoldMs;
 
-        // The steps are asked for at the display's frame length for the length of the collapse, and not at the
-        // countdown's sixteen milliseconds - and the system's clock is asked for a fine enough one to give
-        // them, which is what makes a sixteen millisecond request land every sixteen milliseconds rather than
-        // on every other tick of a fifteen and a half millisecond clock.
-        Native.TimeBeginPeriod(1u);
+        // The steps are asked for at the display's frame length for the length of the fade, and not at the
+        // countdown's sixteen milliseconds, which is too coarse to carry a hundred and sixty of them. The
+        // system's clock was already asked for a fine enough one when the card was made; see Show.
         Timer(_frame);
-        Say($"ads: collapsing into {_small.Right - _small.Left}px at {_small.Left},{_small.Top}" +
-            $" over {CollapseMs} ms at a frame of {_frame} ms, rounding off={RoundOff}," +
-            $" after {_collapseAt - Now} ms of standing still");
+        Say($"ads: fading out over {FadeMs} ms at a frame of {_frame} ms," +
+            $" after {_fadeAt - Now} ms of standing still");
     }
 
     /// <summary>

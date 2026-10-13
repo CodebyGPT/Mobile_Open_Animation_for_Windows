@@ -1460,11 +1460,11 @@ internal sealed class Animator
     /// as the alternative. The choice is gone: one curve is a decision rather than a preference, and the
     /// menu entry existed only to offer the other one.
     ///
-    /// Public because the advertisement's card moves on it too: it is handed to <see cref="AdsCard.Curve" />
-    /// rather than copied, so that a card arriving and a card leaving are the same movement as the panels
-    /// around them and there is one curve in the program to keep in step.
+    /// It is no longer public either. The advertisement's card was handed it as well, so that a card arriving
+    /// and a card leaving were the same movement as the panels around them - and the card does not move any
+    /// more, so the only thing on it now is the panels this file draws.
     /// </summary>
-    public static double Ease(double t)
+    private static double Ease(double t)
     {
         if (t <= 0) return 0;
         if (t >= 1) return 1;

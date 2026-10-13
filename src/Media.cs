@@ -303,7 +303,7 @@ internal sealed class MediaPlayer : IDisposable
     ///
     /// Nothing in the program calls this any more - the countdown hands over to the last frame now, see
     /// HoldLastFrame - and it is kept because it is the other half of that measurement: what the advertisement
-    /// used to collapse over is the control the new frame is compared against, and probe/media photographs both.
+    /// used to fade over is the control the new frame is compared against, and probe/media photographs both.
     /// </summary>
     public bool Rewind()
     {
@@ -315,7 +315,7 @@ internal sealed class MediaPlayer : IDisposable
     /// The last frame of the file, on screen and held there. True when the player took it.
     ///
     /// For the moment an advertisement ends: mfplay leaves the video window showing nothing once playback has
-    /// run out, which is a black card, and a black card is a worse thing to collapse than the advertisement
+    /// run out, which is a black card, and a black card is a worse thing to fade than the advertisement
     /// itself. What used to be put up instead was the first frame - and the first frame of an advertisement is
     /// the one frame in it that belongs to no part of what the user has just been watching. The last frame is
     /// the one the picture actually stopped on.

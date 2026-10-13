@@ -385,11 +385,11 @@ internal static class Program
     /// what it is doing, what its mute control says, where to write down a mute the user asked for, and how it
     /// goes away.
     ///
-    /// The collapse follows the program's own closing cards rather than a second opinion: the length is the
-    /// animation length in the ini, the frame is the display's, the curve is the one its own animations move
-    /// on, and whether it rounds off into a disc is the dynamic-corner switch. <paramref name="radius" /> is
-    /// the corner the opening animation's card ended on, handed over by the animator, and is what the
-    /// advertisement wears while it is up - zero for the logon advertisement, whose card is its own.
+    /// The card does not animate: it appears where it belongs and leaves by fading where it stands, so the only
+    /// two things it is told about its own looks are the frame the fade is stepped at and the corner it wears.
+    /// <paramref name="radius" /> is the corner the opening animation's card ended on, handed over by the
+    /// animator, and is what the window advertisement wears while it is up - zero for the logon advertisement,
+    /// whose card is its own and has nothing to line up with.
     /// </summary>
     private static void WireCard(int radius)
     {
@@ -416,11 +416,8 @@ internal static class Program
             Log.Write(opened ? $"ads: searching, {url}" + (why.Length == 0 ? "" : $" - {why}")
                              : $"ads: the search was not opened: {why}");
         };
-        AdsCard.Curve = Animator.Ease;
-        AdsCard.CollapseMs = _s.DurationMs;
         AdsCard.FrameMs = (int)Math.Round(_anim.FrameMs);
         AdsCard.Radius = radius;
-        AdsCard.RoundOff = _s.DynamicCorner;
     }
 
     /// <summary>
