@@ -12,6 +12,13 @@
 // shows it as a shortcut that can be deleted, and it is per-user by construction rather than by a
 // flag.
 //
+// The shortcut starts the program with <see cref="LogonArgument" />, and that argument is the whole
+// of how a copy started at logon is told from a copy the user started themselves. Nothing else can
+// tell them apart: Explorer is the parent of both, the program's own path is the same, and the clock
+// is no help - the logon launch can sit behind a consent prompt for as long as the user leaves it
+// there, and a start ten minutes after logon is then indistinguishable from a start at logon. See
+// Program.StartedAtLogon, which is what plays the logon advertisement.
+//
 // What it replaces, and why
 // -------------------------
 // A scheduled task, created through schtasks with an ONLOGON trigger and /RL HIGHEST. The point of
@@ -43,6 +50,14 @@
 // layout that only Windows can validate; asking the shell to write it is four property assignments
 // and cannot be subtly wrong.
 //
+// The three states a shortcut can be in
+// -------------------------------------
+// Not there, ours, ours-but-out-of-date, or somebody else's - and the three are acted on differently
+// rather than squashed into a bool. Ours is what the menu shows. Somebody else's is what the user is
+// asked about before it is replaced. Ours-but-out-of-date is repaired without a word, because it is
+// this program's own file: the only way it happens is a shortcut written by an older build, and
+// asking the user to approve rewriting our own file is a question with one sensible answer.
+//
 // The rule the caller depends on
 // ------------------------------
 // Apply reports the state that actually holds afterwards, not the state that was requested. The
@@ -62,6 +77,15 @@ internal static class AutoStart
     private const string ShortcutName = "Mobile Open Animation for Windows.lnk";
 
     /// <summary>
+    /// What this program's own start-up shortcut passes, and the only thing that distinguishes the copy
+    /// Windows starts at logon from a copy the user started by hand. See Program.StartedAtLogon.
+    ///
+    /// It is not a switch the user is meant to type: the Debug menu's entry plays a logon advertisement
+    /// whenever it is asked to, and this is what the shortcut does instead of that. Nothing else reads it.
+    /// </summary>
+    public const string LogonArgument = "--logon";
+
+    /// <summary>
     /// Where the shortcut lives: the current user's Startup folder, which is
     /// <c>%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup</c>.
     ///
@@ -72,15 +96,32 @@ internal static class AutoStart
     public static string ShortcutPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.Startup), ShortcutName);
 
-    // The .lnk stores its target in the console code page as well as in UTF-16; see PointsAtUs.
+    // The .lnk stores its target, and its arguments, in the console code page as well as in UTF-16;
+    // see What.
     private static readonly Encoding Oem =
         Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
 
+    /// <summary>What a shortcut under this program's name turned out to be.</summary>
+    private enum Kind
+    {
+        /// <summary>Nothing is there.</summary>
+        Nothing,
+
+        /// <summary>This program, started with the argument that makes it a logon start.</summary>
+        Ours,
+
+        /// <summary>This program, written before the shortcut carried that argument.</summary>
+        OutOfDate,
+
+        /// <summary>A shortcut under our name that starts something else.</summary>
+        Foreign,
+    }
+
     /// <summary>
-    /// True only when the shortcut exists AND still points at this program.
+    /// True only when the shortcut is there and is the one this program would write.
     ///
     /// A shortcut that is present but points somewhere else counts as absent, which is what makes the
-    /// next enable overwrite it - the same direction the scheduled task's field check took, and for
+    /// next enable replace it - the same direction the scheduled task's field check took, and for
     /// the same reason: a false "absent" costs one redundant write, while a false "present" leaves the
     /// menu claiming a state this program does not control.
     ///
@@ -97,34 +138,77 @@ internal static class AutoStart
     /// </summary>
     internal static bool IsEnabled(string path)
     {
-        if (!File.Exists(path))
-        {
-            Log.Write($"autostart: no shortcut at {path}");
-            return false;
-        }
-
-        bool ours = PointsAtUs(path, out string why);
+        Kind kind = What(path, out string why);
         Log.Write($"autostart: {why}");
-        return ours;
+        return kind == Kind.Ours;
     }
 
-    /// <summary>Whether an enable would have to replace a shortcut this program did not write.</summary>
-    public static bool Conflicts() => File.Exists(ShortcutPath) && !IsEnabled(ShortcutPath);
+    /// <summary>
+    /// Whether an enable would replace a shortcut that starts something this program did not put there.
+    ///
+    /// False for a shortcut of this program's own that is merely out of date: that one is repaired without
+    /// asking. True only for a file that names another program - or for one that cannot be read at all,
+    /// which is the same thing from here and is the answer that asks rather than the one that overwrites.
+    /// </summary>
+    public static bool Conflicts() => Conflicts(ShortcutPath);
+
+    internal static bool Conflicts(string path) => What(path, out _) == Kind.Foreign;
 
     /// <summary>
-    /// Whether the shortcut names this executable. Its target is read out of the file's own bytes
-    /// rather than through the shell: asking the shell to resolve a shortcut means COM and, for the
-    /// question actually being asked, means a shortcut whose target has been deleted resolving to
-    /// somewhere else entirely.
+    /// Brings this program's own shortcut up to date when it is out of date, and does nothing in every
+    /// other case.
     ///
-    /// The target is in there twice - as ANSI in the LinkInfo block, which is what resolves it, and as
-    /// UTF-16 in the string blocks, which is what the property sheet shows - so both are looked for
-    /// and either one naming this program is enough. Whichever of the two a writer filled in, the
-    /// answer is the same; requiring one of them would make the check depend on which shell version
-    /// wrote the file.
+    /// Called once at start-up, before the menu is drawn and before the logon advertisement is considered,
+    /// so that both see the shortcut that is really there. The state it exists for is a shortcut written by
+    /// a build from before the shortcut carried the logon argument: it starts the program and the program
+    /// then plays no advertisement, which is a silent difference between two builds that a user has no way
+    /// to see. Rewriting our own file is not a question to ask, and it is the one thing here that writes
+    /// without being clicked.
     /// </summary>
-    private static bool PointsAtUs(string path, out string why)
+    public static void Repair()
     {
+        string path = ShortcutPath;
+        if (What(path, out string why) != Kind.OutOfDate) return;
+
+        Log.Write($"autostart: {why}");
+        bool now = Apply(path, true, out string error);
+        Log.Write($"autostart: repaired the shortcut ({now}{(error.Length == 0 ? "" : ", " + error)})");
+    }
+
+    /// <summary>
+    /// Whether a command line says this copy was started by the start-up shortcut. The argument is compared
+    /// case-insensitively, which costs nothing and is the difference between the setting working and a
+    /// shortcut that silently does not - the argument is written by this program, but nothing stops anyone
+    /// editing the shortcut.
+    /// </summary>
+    public static bool SaysLogon(string[] args)
+    {
+        foreach (string arg in args)
+            if (string.Equals(arg, LogonArgument, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Which of the three things a shortcut is, and the sentence for the log that says how it was decided.
+    ///
+    /// Its target is read out of the file's own bytes rather than through the shell: asking the shell to
+    /// resolve a shortcut means COM and, for the question actually being asked, means a shortcut whose
+    /// target has been deleted resolving to somewhere else entirely.
+    ///
+    /// Both the target and the argument are in there twice - as ANSI in the LinkInfo block, which is what
+    /// resolves it, and as UTF-16 in the string blocks, which is what the property sheet shows - so both
+    /// encodings are looked for and either one is enough. Whichever of the two a writer filled in, the
+    /// answer is the same; requiring one of them would make the check depend on which shell version wrote
+    /// the file.
+    /// </summary>
+    private static Kind What(string path, out string why)
+    {
+        if (!File.Exists(path))
+        {
+            why = $"no shortcut at {path}";
+            return Kind.Nothing;
+        }
+
         byte[] bytes;
         try
         {
@@ -133,29 +217,38 @@ internal static class AutoStart
         catch (Exception ex)
         {
             why = $"the shortcut at {path} could not be read ({ex.GetType().Name}: {ex.Message})";
-            return false;
+            return Kind.Foreign;
         }
 
         string exe = Compat.ExePath;
-        if (exe.Length > 0 &&
-            (Contains(bytes, Encoding.Unicode.GetBytes(exe)) || Contains(bytes, Oem.GetBytes(exe))))
+        if (exe.Length == 0 || !(Holds(bytes, exe) || Holds(bytes, exe, Oem)))
         {
-            why = $"the shortcut at {path} is this program";
-            return true;
+            why = $"the shortcut at {path} exists but does not name this program (looking for \"{exe}\" " +
+                  $"in {bytes.Length} bytes), so it counts as absent";
+            return Kind.Foreign;
         }
 
-        why = $"the shortcut at {path} exists but does not name this program (looking for \"{exe}\" " +
-              $"in {bytes.Length} bytes), so it counts as absent";
-        return false;
+        if (!Holds(bytes, LogonArgument) && !Holds(bytes, LogonArgument, Oem))
+        {
+            why = $"the shortcut at {path} is this program but does not carry {LogonArgument}, so it is " +
+                  "out of date and will be written again";
+            return Kind.OutOfDate;
+        }
+
+        why = $"the shortcut at {path} is this program, started at logon";
+        return Kind.Ours;
     }
 
-    private static bool Contains(byte[] haystack, byte[] needle)
+    private static bool Holds(byte[] bytes, string text) => Holds(bytes, text, Encoding.Unicode);
+
+    private static bool Holds(byte[] bytes, string text, Encoding encoding)
     {
-        if (needle.Length == 0 || haystack.Length < needle.Length) return false;
-        for (int i = 0; i + needle.Length <= haystack.Length; i++)
+        byte[] needle = encoding.GetBytes(text);
+        if (needle.Length == 0 || bytes.Length < needle.Length) return false;
+        for (int i = 0; i + needle.Length <= bytes.Length; i++)
         {
             int j = 0;
-            while (j < needle.Length && haystack[i + j] == needle[j]) j++;
+            while (j < needle.Length && bytes[i + j] == needle[j]) j++;
             if (j == needle.Length) return true;
         }
         return false;
@@ -225,6 +318,7 @@ internal static class AutoStart
         {
             dynamic shortcut = ((dynamic)shell).CreateShortcut(path);
             shortcut.TargetPath = Compat.ExePath;
+            shortcut.Arguments = LogonArgument;
             shortcut.WorkingDirectory = Path.GetDirectoryName(Compat.ExePath) ?? "";
             shortcut.Save();
             link = (object)shortcut;

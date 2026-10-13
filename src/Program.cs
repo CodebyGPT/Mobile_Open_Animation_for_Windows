@@ -35,6 +35,13 @@ internal static class Program
     /// click, and after a change.
     /// </summary>
     internal static bool AutoStartOn;
+
+    /// <summary>
+    /// Whether this copy is the one the start-up shortcut started, and therefore the only copy a logon
+    /// advertisement is played by. Read once from the command line at start-up; see AutoStart.LogonArgument
+    /// for why the argument is the only thing that can answer it.
+    /// </summary>
+    internal static bool StartedAtLogon;
     private static TrayHost _host = null!;
     private static Animator _anim = null!;
 
@@ -233,9 +240,21 @@ internal static class Program
         _anim.Start(_host.Hwnd);
 
         // The start-up shortcut is read once here. ShowMenu must not read a file on every right click,
-        // and IsEnabled logs what it found either way, including what it was looking for when the
-        // shortcut exists but names something else.
+        // and What logs what it found either way, including what it was looking for when the shortcut
+        // exists but names something else.
+        //
+        // Repaired first, because both of the things below care about a shortcut that is current: the menu
+        // shows whether it is there, and the logon advertisement requires this copy to have been started by
+        // it. See AutoStart.Repair.
+        AutoStart.Repair();
         AutoStartOn = AutoStart.IsEnabled();
+
+        // And whether this copy is the one the shortcut started, which is the whole of what a logon
+        // advertisement is for. Nothing else distinguishes it; see AutoStart.LogonArgument.
+        StartedAtLogon = AutoStart.SaysLogon(Environment.GetCommandLineArgs());
+        Log.Write($"started at logon: {StartedAtLogon} " +
+                  $"(the shortcut passes {AutoStart.LogonArgument}; this copy's command line is " +
+                  $"{string.Join(" ", Environment.GetCommandLineArgs().Skip(1))})");
 
         // Running means working, and exiting means not working: there is deliberately no paused
         // state, because a menu item that silently turns the program off is a support question.
@@ -445,6 +464,19 @@ internal static class Program
 
         if (!forced)
         {
+            // A logon advertisement is for the copy the start-up shortcut started, and for no other copy.
+            // The switch and the shortcut being there are both necessary and neither is sufficient: a menu
+            // click that starts the program by hand is not a logon, and playing sixteen seconds of
+            // full-screen advertisement at every manual start is what this costs when the two are confused.
+            // Reported rather than skipped silently, because a logon where no advertisement appeared has to
+            // be answerable from the log.
+            if (!StartedAtLogon)
+            {
+                Log.Write("ads: this copy was not started at logon, so no logon advertisement" +
+                          $" (the shortcut passes {AutoStart.LogonArgument}, and this copy did not get it)");
+                return;
+            }
+
             var ads = Ads.Menu(Ads.Available, AutoStartOn, _s.WindowAd, _s.BootAd);
             if (!ads.BootAdUsable || !ads.BootAd)
             {
