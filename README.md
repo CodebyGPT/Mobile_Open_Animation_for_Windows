@@ -12,22 +12,22 @@
 
 ### Features
 
-- **Zero injection, minimally invasive**
+- **0% injection, minimally invasive**
 - **Single file, compact**
+- **No telemetry, no network access**
 - **No installer, nothing written to the registry**
 - **Uses the .NET Framework 4.8 runtime**
 - **Dynamic corner radius**
 - **Material 3 emphasized curves**
 - **Follows the Windows animation setting**
 - **Custom opening ad**
-- **No telemetry, no network access**
 
 ### Limitations
 
 - **UWP / WinUI apps** - the window is drawn by the framework itself, so there is nothing to take over.
 - **Online games with anti-cheat, and some security software** - their windows do not accept a change of state from another program.
-- **Dialogs, popups and tool windows** - a window with an owner, one the system marks as a tool window, a dialog, and the splash or helper windows that are too small when they are created, are all left alone.
-- **Apps that quit as they close** - opening animation only. The window is gone before its position and size can be read, so there is nothing to shrink back from.
+- **Dialogs, popups and tool windows** - windows with an owner, windows the system marks as tool windows, dialogs, and the splash or helper windows that are too small when they appear, are all left alone.
+- **Apps that quit as they close** - opening animation only. The window is gone before its position and size can be read, so there is nothing to shrink from.
 - **The same app sometimes animates and sometimes does not** - the program has to take the window over before it appears. When it loses that race the window is left alone rather than drawn over, so that launch has no animation.
 
 ### Building
@@ -73,13 +73,13 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 
 - **零注入、侵入性低**
 - **单文件、体积小**
+- **无遥测、不联网**
 - **免安装、不写注册表**
 - **使用 .NET 4.8 运行时**
 - **支持动态圆角**
 - **采用 Material 3 Emphasized 曲线**
 - **遵循 Windows 个性化设置**
 - **支持自定义开屏广告**
-- **无遥测、不联网**
 
 ### 局限性
 
@@ -92,8 +92,8 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 ### 如何编译
 
 **运行**它不需要编译：直接从 [Releases](https://github.com/CodebyGPT/Mobile_Open_Animation_for_Windows/releases)
-下载 `MobileOpenAnimation.exe` 即可。想自己编则需要一个 .NET SDK，而本仓库不附带 SDK——这里用的是几百 MB 的
-便携版，放在被 git 忽略的 `.toolchain/` 里。
+下载 `MobileOpenAnimation.exe` 即可。想自己编则需要一个 .NET SDK，而本仓库不附带 SDK——这里用的是几百 MB
+的便携版，放在被 git 忽略的 `.toolchain/` 里。
 
 - **用便携版（系统里什么都不装）**：把 .NET SDK 解压到 `.toolchain\dotnet\dotnet.exe` 这个位置，然后运行
   `.\build.ps1`。该脚本还会把 NuGet 缓存、CLI home 以及 `%APPDATA%`/`%LOCALAPPDATA%` 一并重定向到
@@ -102,9 +102,9 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 - **机器上已装好 SDK**：`dotnet build src\Moa.csproj -c Release` 效果相同。这样编出来的版本号显示为
   `unknown`，因为时间和提交号是 `build.ps1` 传进去的；需要的话自行加上 `-p:InformationalVersion=`。
 
-首次编译需要联网一次：目标框架是 .NET Framework 4.8（这样编出来的 exe 在 Win10 1903 及以上无需安装任何
-依赖），针对该框架 SDK 会从 NuGet 获取 `Microsoft.NETFramework.ReferenceAssemblies`，除非机器上已装 4.8
-目标包（targeting pack）。该包进入 `.toolchain/nuget` 缓存之后，后续编译不会再还原任何东西，也完全不碰网络。
+首次编译需要联网一次：目标框架是 .NET Framework 4.8（这样编出来的 exe 在 Win10 1903 及以上无需安装任何依赖），针对该框架
+SDK 会从 NuGet 获取 `Microsoft.NETFramework.ReferenceAssemblies`，除非机器上已装 4.8 目标包（targeting pack）。该包进入
+`.toolchain/nuget` 缓存之后，后续编译不会再还原任何东西，也完全不碰网络。
 
 ### 许可
 
@@ -117,5 +117,5 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 
 ### 图标来源
 
-本程序图标来自字节跳动官方图标库 [ByteDance IconPark](https://github.com/bytedance/IconPark)（"曲线调整"图标），
-使用宽松的 **Apache License** 许可。
+本程序图标来自字节跳动官方图标库 [ByteDance IconPark](https://github.com/bytedance/IconPark)（"曲线调整"图标），使用宽松的
+**Apache License** 许可。
