@@ -17,9 +17,10 @@
 - **No telemetry, no network access**
 - **No installer, nothing written to the registry**
 - **Uses the .NET Framework 4.8 runtime**
+- **Follows Windows settings**
+- **Not hardcoded - any resolution, scaling or monitor layout**
 - **Dynamic corner radius**
 - **Material 3 emphasized curves**
-- **Follows Windows settings**
 - **Custom opening ad**
 
 ### Limitations
@@ -76,9 +77,10 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 - **无遥测、不联网**
 - **免安装、不写注册表**
 - **使用 .NET 4.8 运行时**
+- **遵循 Windows 设置**
+- **不硬编码，适配各种分辨率、缩放与多屏**
 - **支持动态圆角**
 - **采用 Material 3 Emphasized 曲线**
-- **遵循 Windows 设置**
 - **支持自定义开屏广告**
 
 ### 局限性
