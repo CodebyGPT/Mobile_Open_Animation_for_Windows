@@ -418,9 +418,6 @@ internal static class Native
     /// </summary>
     public const uint VK_RETURN = 0x0D;
 
-    /// <summary>The four arrows of the launch-ad code; see Konami.</summary>
-    public const uint VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28;
-
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
     {

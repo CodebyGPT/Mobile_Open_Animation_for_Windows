@@ -2,24 +2,24 @@
 // control, a countdown and the name of what is playing, and goes away when the countdown runs out - or when one
 // of those controls is clicked.
 //
-// It is used for two things in this feature, and they differ only in where it appears:
-//
-//   * the logon advertisement, which covers the primary screen;
-//   * the window advertisement, which takes over the rectangle the opening animation stopped at.
+// It takes over the rectangle the opening animation stopped at: the window advertisement, which is the only
+// kind there is now. There used to be a logon one as well, covering the primary screen before the desktop was
+// usable, and it is gone - with it went the argument the start-up launcher passed, the switch that refused to
+// be switched on without a logon, and the rule that a click anywhere dismissed that card.
 //
 // The window itself does nothing clever. The video is Media Foundation's, drawn into a child window of its own
 // (see Media.cs); what is here is the part that is ours - where it appears, what it says, and when it goes.
 //
-// Seven decisions worth writing down, because each of them is the opposite of the obvious one:
+// Six decisions worth writing down, because each of them is the opposite of the obvious one:
 //
 //   * It does not animate. It appears where it belongs the moment it is made and leaves by fading out where it
-//     stands. Both ends used to be a movement - a logon card grew out of the middle of the screen, and both
-//     kinds collapsed into a small square and rounded off into a disc as they went - and everything that
-//     movement dragged in went with it: a region recomputed on every frame, a frame rate to report, a clock to
-//     sample, a shape to arrive in that the card being covered had to agree with. An advertisement is not one
-//     of the animations this program exists to draw, and it reads better as a card that is simply there and
-//     then is not. The one piece of the old movement worth keeping is the fade at the end, which is now the
-//     whole of the way out; see Fade.
+//     stands. Both ends used to be a movement - a logon card grew out of the middle of the screen, and this
+//     kind collapsed into a small square and rounded off into a disc as it went - and everything that movement
+//     dragged in went with it: a region recomputed on every frame, a frame rate to report, a clock to sample, a
+//     shape to arrive in that the card being covered had to agree with. An advertisement is not one of the
+//     animations this program exists to draw, and it reads better as a card that is simply there and then is
+//     not. The one piece of the old movement worth keeping is the fade at the end, which is now the whole of the
+//     way out; see Fade.
 //
 //   * WS_EX_NOACTIVATE. An advertisement that takes the foreground takes the keyboard with it, so whatever the
 //     user was typing into stops receiving it. The card is created visible and never activates.
@@ -35,11 +35,10 @@
 //     by whoever holds the capture - see Released.
 //   * The countdown is counted from a deadline rather than by decrementing on each tick. A timer is not
 //     guaranteed its interval, and a countdown that drifts is a countdown that lies about how long is left.
-//   * The card is shown, not asked to show itself: nothing else ever makes this window visible. The logon card
-//     used to show itself a frame at a time because every step of its grow was a SetWindowPos with
-//     SWP_SHOWWINDOW, and the window card had nothing that did - it sat hidden for the whole countdown, and the
-//     only thing that ever made it appear was the shrink at the end of it. With nothing moving there is no
-//     step to show it either, so the style is the whole of it. See the WS_VISIBLE below.
+//   * The card is shown, not asked to show itself: nothing else ever makes this window visible, and since
+//     nothing about it moves there is no step with SWP_SHOWWINDOW in it either. It sat hidden for the whole
+//     countdown once, with the only thing that ever made it appear being the shrink at the end of it. See the
+//     WS_VISIBLE below.
 //
 // probe/media drives all of this for real, so it can be looked at without the elevated tray program.
 
@@ -120,9 +119,8 @@ internal sealed class AdsCard
     /// The frame the fade is stepped at, and the corner the card wears while it is up.
     ///
     /// Both come from the program, because both are decisions it has already made about its own cards: the frame
-    /// from the display, and the corner radius from the opening animation the window advertisement takes over -
-    /// which is the shape the card arrived in, and therefore the shape the advertisement over it has to be. Zero
-    /// for the logon advertisement, whose card is its own and which has nothing to line up with. The card cannot
+    /// from the display, and the corner radius from the opening animation this card takes over - which is the
+    /// shape the card arrived in, and therefore the shape the advertisement over it has to be. The card cannot
     /// read either of them and a second answer here would be a second thing to keep in step. probe/media sets
     /// its own.
     /// </summary>
@@ -187,7 +185,7 @@ internal sealed class AdsCard
     private uint _timerMs;                                   // the interval the step timer is at
     private long _deadline;              // when the countdown reaches zero, 0 until the player has said how long
     private int _shownSeconds = -1;
-    private bool _muted, _closeAnimation, _closing, _done, _controls, _logon, _fitSaid;
+    private bool _muted, _closeAnimation, _closing, _done, _controls, _fitSaid;
 
     /// <summary>What the handover to the last frame took, and whether that has been written down yet.</summary>
     private bool _heldFrame, _heldSaid;
@@ -247,41 +245,18 @@ internal sealed class AdsCard
     public static bool Showing => _open != null;
 
     /// <summary>
-    /// The logon advertisement: covers the primary screen until its countdown runs out, or until it is clicked.
-    ///
-    /// (0,0) is the primary monitor's own corner, by definition and not by luck: the virtual desktop's origin
-    /// can be negative when a monitor sits to the left of or above the primary one, but the primary itself
-    /// always starts at the origin. So this is right on any arrangement of monitors, and the alternative -
-    /// covering the whole virtual desktop - would be a change rather than a repair.
-    ///
-    /// The screen rather than the work area, because an advertisement is meant to cover the screen, taskbar
-    /// included.
-    /// </summary>
-    public static AdsCard? ShowBoot(string[] files, int capSeconds, bool muted, bool closeAnimation)
-        => Show(files, capSeconds, muted, closeAnimation, new RECT
-        {
-            Left = 0, Top = 0,
-            Right = Native.GetSystemMetrics(Native.SM_CXSCREEN),
-            Bottom = Native.GetSystemMetrics(Native.SM_CYSCREEN),
-        }, logon: true);
-
-    /// <summary>
-    /// The window advertisement: it takes over exactly the rectangle the opening animation stopped at, with no
-    /// movement of its own.
+    /// The card: it takes over exactly the rectangle the opening animation stopped at, with no movement of its
+    /// own.
     ///
     /// Returns null when there is nothing to show, which includes no files and a card already up. The card
     /// belongs to the caller's message loop from here: its timer arrives there, so the caller must be pumping.
     /// </summary>
     public static AdsCard? ShowOver(RECT rect, string[] files, int capSeconds, bool muted, bool closeAnimation)
-        => Show(files, capSeconds, muted, closeAnimation, rect, logon: false);
-
-    private static AdsCard? Show(string[] files, int capSeconds, bool muted, bool closeAnimation,
-                                 RECT full, bool logon)
     {
         if (_open != null || files == null || files.Length == 0) return null;
         if (!Register()) return null;
 
-        int w = full.Right - full.Left, h = full.Bottom - full.Top;
+        int w = rect.Right - rect.Left, h = rect.Bottom - rect.Top;
         if (w <= 0 || h <= 0) return null;
 
         var card = new AdsCard
@@ -289,9 +264,8 @@ internal sealed class AdsCard
             _muted = muted,
             _closeAnimation = closeAnimation,
             _capSeconds = capSeconds,
-            _logon = logon,
             _candidates = Shuffled(files),
-            _full = full,
+            _full = rect,
         };
 
         card._hwnd = Native.CreateWindowExW(
@@ -302,12 +276,11 @@ internal sealed class AdsCard
             ClassName, "Mobile Open Animation",
             // WS_VISIBLE is not decoration here, it is the whole of the card appearing: nothing else ever makes
             // this window visible, and since nothing about it moves there is no step with SWP_SHOWWINDOW in it
-            // either. The logon card used to show itself a frame at a time that way, and the window card had
-            // nothing at all: it sat hidden for the whole countdown, and the only thing that ever made it
-            // appear was the shrink at the end of it. The controls were the one part that appeared, because
-            // they are shown one at a time below.
+            // either. It sat hidden for the whole countdown once, with the only thing that ever made it appear
+            // being the shrink at the end of it; the controls were the one part that appeared, because they are
+            // shown one at a time below.
             Native.WS_POPUP | Native.WS_CLIPCHILDREN | Native.WS_VISIBLE,
-            full.Left, full.Top, w, h,
+            rect.Left, rect.Top, w, h,
             IntPtr.Zero, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
         if (card._hwnd == IntPtr.Zero) return null;
         Native.SetLayeredWindowAttributes(card._hwnd, 0, 255, Native.LWA_ALPHA);
@@ -323,10 +296,9 @@ internal sealed class AdsCard
         if (card._videoHost == IntPtr.Zero) { Native.DestroyWindow(card._hwnd); return null; }
 
         // The shape it wears. The opening animation's card ended at a corner radius - the window's own on
-        // Windows 11, square elsewhere - and the window advertisement takes over that rectangle, so it wears the
-        // same corner: a hard square appearing where a rounded card was is the one seam the fade cannot hide.
-        // The logon advertisement is handed a radius of nothing, because it covers the screen and has no card to
-        // line up with; the radius is the program's to decide and this is only where it is applied.
+        // Windows 11, square elsewhere - and this card takes over that rectangle, so it wears the same corner: a
+        // hard square appearing where a rounded card was is the one seam the fade cannot hide. The radius is the
+        // program's to decide and this is only where it is applied.
         Round(card._hwnd, w, h);
 
         _open = card;
@@ -339,8 +311,7 @@ internal sealed class AdsCard
         card._frame = MonitorFrameMs(card._hwnd, FrameMs);
         card.Timer(StepMs);         // nothing to move at speed yet; the countdown is whole seconds
         card.Next();
-        Say($"ads: card 0x{card._hwnd:X} ({(logon ? "logon" : "window")}) at " +
-            $"{full.Left},{full.Top} {w}x{h}");
+        Say($"ads: card 0x{card._hwnd:X} at {rect.Left},{rect.Top} {w}x{h}");
         return card;
     }
 
@@ -784,7 +755,7 @@ internal sealed class AdsCard
         _pressOn = ControlAt(p);
         _pressAt = p;
         _dragging = false;
-        if (_pressOn == IntPtr.Zero && !_logon && Native.GetWindowRect(_hwnd, out var r))
+        if (_pressOn == IntPtr.Zero && Native.GetWindowRect(_hwnd, out var r))
         {
             _grabX = p.X - r.Left;
             _grabY = p.Y - r.Top;
@@ -855,7 +826,7 @@ internal sealed class AdsCard
     /// A press that was let go somewhere else is taken back and says so, which is the whole reason the press
     /// state exists and is what every button on the system does. A press on the card itself is not taken back
     /// this way because there is nothing to take back: the rule for where a click landed is ActingOn's, and for
-    /// the card itself that rule is "nothing" on a window advertisement and "close" on the logon one.
+    /// the card itself that rule is "nothing": only the countdown and the name capsule close it.
     ///
     /// A press that turned into a drag is not a click at all and does not reach that rule, whatever it was let
     /// go on: the advertisement was moved, and being moved is not a reason to dismiss it.
@@ -919,14 +890,10 @@ internal sealed class AdsCard
 
         // The name capsule is a way out of the advertisement in the other direction: it says what this is, and
         // pressing it looks that up. It closes the card as well, on either kind, and that is the one rule here
-        // that was written twice before being made one: on the logon card it had to, because a card that covers
-        // the screen would be sitting in front of the browser it had just asked for, while the window card used
-        // to stay up on the argument that it only stands in for a window and its countdown is its way out. It is
-        // a control the user pressed to go somewhere else, and leaving the advertisement over what they asked
-        // for is the same mistake in miniature. It is checked before the rules below because it is a control, and
-        // because a click on the logon card closes it, which would make the one control that does something else
-        // close the advertisement instead of searching. The search is asked for before the close so that the URL
-        // has been handed over before the card starts taking itself down.
+        // that was written twice before being made one: a control the user pressed to go somewhere else should
+        // not leave the advertisement over what they asked for. It is checked before the rules below because it
+        // is a control, and because a click anywhere else on the card does nothing. The search is asked for
+        // before the close so that the URL has been handed over before the card starts taking itself down.
         if (On(NameControl, out var name, p))
         {
             Say($"ads: a click at {p.X},{p.Y} is on the name control " +
@@ -936,17 +903,9 @@ internal sealed class AdsCard
             return;
         }
 
-        // The two kinds of card go away differently apart from that, and that is the difference between them that
-        // matters most. The logon advertisement covers the screen and has nothing to type into, so a click
-        // anywhere closes it: it is in the way of everything and getting rid of it should cost one click. The
-        // window advertisement takes the place of a window the user was about to use, so a click meant for that
-        // window must not dismiss the advertisement instead - it is only the countdown that skips it.
-        if (_logon)
-        {
-            Say($"ads: a click at {p.X},{p.Y} is on the logon card, so closing");
-            Close();
-            return;
-        }
+        // What the card itself does when the press was not on a control: nothing. The card takes the place of a
+        // window the user was about to use, so a click meant for that window must not dismiss the advertisement -
+        // it is the countdown that closes it, and the name capsule when the user asked it to search.
         if (On(CountdownControl, out var count, p))
         {
             Say($"ads: a click at {p.X},{p.Y} is on the countdown " +

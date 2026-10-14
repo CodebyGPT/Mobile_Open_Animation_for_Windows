@@ -13,18 +13,13 @@ internal sealed class Settings
     public Lang Language = Lang.English;
 
     /// <summary>
-    /// Whether a window gets an advertisement over its opening animation.
+    /// Whether a window gets an advertisement over its opening animation - the 开屏广告 entry, which is on the
+    /// tray menu beside the animation switches rather than hidden behind a code, and is off until it is ticked.
     ///
-    /// Off by default, like the logon one. The submenu is hidden until it is asked for, so "on" would mean the
-    /// feature arrived with the menu - which is the one thing an entertainment feature must not do.
+    /// Ticking it is refused when there is nothing to play, which is why the two settings under it are about
+    /// where the videos are rather than about whether the feature exists: see Ads and Program.SwitchOnOpeningAd.
     /// </summary>
     public bool WindowAd = false;
-
-    /// <summary>
-    /// Whether an advertisement also runs at logon - the whole screen, before the desktop is usable. Frozen
-    /// unless the program starts at logon, since a logon advertisement is what it is. See <see cref="Ads.Menu" />.
-    /// </summary>
-    public bool BootAd = false;
 
     /// <summary>
     /// Whether advertisements play silently, remembered from the last time the mute control was used.
@@ -34,18 +29,6 @@ internal sealed class Settings
     /// cannot be told to stay that way is a mute button that does nothing.
     /// </summary>
     public bool AdsMuted = true;
-
-    /// <summary>
-    /// Whether the tray menu shows the advertisement submenu at all.
-    ///
-    /// Off by default, and not the same thing as the two switches under it: this one decides whether there is
-    /// anything to click, and those decide whether clicking would do anything. Hiding it is the point - it is
-    /// an entertainment feature, and a menu is not a place to advertise one.
-    ///
-    /// The way in is the About box's advertisement code, thirteen keys in three seconds; this key is the other
-    /// way, for anyone who would rather edit a file than play. See Konami and AboutDialog.
-    /// </summary>
-    public bool AdsVisible = false;
 
     /// <summary>
     /// Whether a window animates as it closes. On by default, and checked per close rather than at
@@ -226,9 +209,7 @@ internal sealed class Settings
             {
                 case "language": s.Language = val.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? Lang.English : Lang.ChineseSimplified; break;
                 case "windowad": s.WindowAd = Bool(val, s.WindowAd); break;
-                case "bootad": s.BootAd = Bool(val, s.BootAd); break;
                 case "adsmuted": s.AdsMuted = Bool(val, s.AdsMuted); break;
-                case "adsvisible": s.AdsVisible = Bool(val, s.AdsVisible); break;
                 case "closeanimation": s.CloseAnimation = Bool(val, s.CloseAnimation); break;
                 case "dynamiccorner": s.DynamicCorner = Bool(val, s.DynamicCorner); break;
                 case "returntoorigin": s.ReturnToOrigin = Bool(val, s.ReturnToOrigin); break;
@@ -281,25 +262,14 @@ internal sealed class Settings
         sb.AppendLine($"version={CurrentConfigVersion}");
         sb.AppendLine("; [menu] en or zh-CN");
         sb.AppendLine($"Language={(Language == Lang.English ? "en" : "zh-CN")}");
-        sb.AppendLine("; [menu] the satirical launch-ad feature. There is no switch for the feature itself:");
-        sb.AppendLine("; the two below are switches of their own, and it is on when either of them is.");
-        sb.AppendLine("; Both are off by default. Neither is acted on while the submenu above is hidden -");
-        sb.AppendLine("; see Ads.Allowed - and neither is changed by hiding it.");
-        sb.AppendLine("; [menu] whether an advertisement is put over a window's opening animation.");
-        sb.AppendLine("; It covers the window while it runs, and only its countdown dismisses it.");
+        sb.AppendLine("; [menu] the satirical opening-ad feature: an advertisement over a window's opening");
+        sb.AppendLine("; animation. Off by default, and refused when there is nothing to play: switching it");
+        sb.AppendLine("; on checks that the Ads folder beside the exe holds a video the player can open, and");
+        sb.AppendLine("; says what to do about it when it does not. Subfolders are not read.");
         sb.AppendLine($"WindowAd={(WindowAd ? 1 : 0)}");
-        sb.AppendLine("; [menu] whether an advertisement also runs at logon, over the whole screen. Ignored");
-        sb.AppendLine("; unless the program starts at logon - the menu freezes this entry when it does not.");
-        sb.AppendLine($"BootAd={(BootAd ? 1 : 0)}");
         sb.AppendLine("; whether advertisements play silently. On by default, and written by the mute control");
         sb.AppendLine("; on the card, which remembers between showings.");
         sb.AppendLine($"AdsMuted={(AdsMuted ? 1 : 0)}");
-        sb.AppendLine("; [menu] whether the advertisement submenu appears in the tray menu at all. Off by");
-        sb.AppendLine("; default. The About box reveals it when its thirteen-key code is entered, and");
-        sb.AppendLine("; setting this to 1 here does the same thing without the playing. The whole");
-        sb.AppendLine("; submenu is frozen while there is nothing to play - the Ads folder beside the exe");
-        sb.AppendLine("; must hold at least one video file; subfolders are not read.");
-        sb.AppendLine($"AdsVisible={(AdsVisible ? 1 : 0)}");
         sb.AppendLine($"CloseAnimation={(CloseAnimation ? 1 : 0)}");
         sb.AppendLine("; [menu] dynamic rounding. On, an opening card begins as a rounded square, 22% of");
         sb.AppendLine("; its own side, and squares off into the window's own corner as it grows, and a");
@@ -365,8 +335,7 @@ internal sealed class Settings
         Log.Write($"settings ({why}): lang={Language} duration={DurationMs}ms handoffFade={HandoffFadeMs}ms" +
                   $" startSize={StartSizePx} close={OnOff(CloseAnimation)}" +
                   $" dynamicCorner={OnOff(DynamicCorner)} returnToOrigin={OnOff(ReturnToOrigin)}" +
-                  $" adsWindow={OnOff(WindowAd)} adsBoot={OnOff(BootAd)}" +
-                  $" adsVisible={OnOff(AdsVisible)}" +
+                  $" adsWindow={OnOff(WindowAd)}" +
                   $" debug={OnOff(DebugMode)} excluded={ExcludedClasses.Count} classes," +
                   $" {ExcludedProcesses.Count} processes");
     }
@@ -451,11 +420,23 @@ internal static class Strings
         // there would be nothing at that place to return to.
         ["ReturnToOrigin"] = ("Return animation (experimental)",
                               "回退动画（实验性）"),
-        // Hidden until the About box's advertisement code is entered, or the ini says otherwise. The two
-        // entries under it are the two kinds of advertisement; see Ads.Menu for which of them can be clicked.
-        ["Ads"]          = ("Play ad", "播放广告"),
-        ["AdsWindow"]    = ("Window ad", "窗口开屏广告"),
-        ["AdsBootAd"]    = ("Logon full-screen ad", "开机全屏广告"),
+        // The one advertisement entry, on the tray menu beside the animation switches and visible like them.
+        ["AdsWindow"]    = ("Opening ad", "开屏广告"),
+        // What the user is told when switching it on finds nothing to play. Both halves matter and both are
+        // heard here and nowhere else: where the videos go, and that making the folder is the user's job - the
+        // program used to make it and leave a note in it, which was the wrong answer for a folder that is the
+        // feature's whole content rather than a convenience. Case-insensitive because Ads.FindFolder compares
+        // the name that way, and named because the advertisement shows a file's name and searches for it.
+        ["AdsNeeded"]    =
+            ("There is nothing to play, so the opening ad is still switched off.\n\n" +
+             "Put a video file of your own in an \"Ads\" subfolder beside this program. The folder's name " +
+             "does not have to be spelled the way it is here - \"ads\" is the same folder to Windows - and it " +
+             "has to be made by hand: this program does not create it. The file's name is what the " +
+             "advertisement shows and searches for, so give it one worth reading.",
+             "没有可以播放的内容，开屏广告保持关闭。\n\n" +
+             "请在本程序旁边手动创建一个 \"Ads\" 子目录（名称大小写不敏感，\"ads\" 与 \"Ads\" 是同一个目录，"
+             + "本程序不会替你创建），并把你自己命名好的视频文件放进去。\n" +
+             "广告会显示并搜索这个文件的文件名，所以请给它起一个值得一看的名字。"),
         ["AdsMute"]      = ("Mute", "静音"),
         ["AdsUnmute"]    = ("Unmute", "取消静音"),
         // The countdown capsule is two labels and a separator: what is left, and what the button it is on does.
@@ -472,17 +453,10 @@ internal static class Strings
         // The bold words in front of the advertisement's own name, on the capsule that searches for it. Short on
         // purpose: what follows is the file's name, which is the thing being shown.
         ["AdsSearch"]    = ("Search", "搜一搜"),
-        // The name of the empty file the program leaves in the Ads folder it makes, so that the folder says
-        // what goes in it even when it is opened from somewhere that never saw this program's tray menu. A file
-        // name, so it has to survive being one: no extension, since nothing about it is a file type, and that
-        // is also what keeps it out of the videos - see Ads.IsVideo.
-        ["AdsNote"]      = ("Put your named video files in here",
-                            "请将命名好的视频文件存在在此处"),
         // A submenu rather than a toggle, and one entry in it so far: what belongs under it is any number
         // of separate diagnostics, each of which can be turned on without the others.
         ["DebugMode"]    = ("Debug mode", "调试模式"),
         ["DebugEnable"]  = ("Enable", "启用"),
-        ["DebugBootAd"]  = ("Play the logon ad now", "立即播放开机全屏广告"),
         // Where the setting actually lives, said in the message that reports it failing: one file in the user's
         // own Startup folder, which a user who is told that can look at - and delete - there, in Windows'
         // Start-up settings page, or in Task Manager's Start-up tab. "Startup folder" is named rather than the

@@ -9,13 +9,12 @@
 //     Mobile Open Animation for Windows.cmd
 //
 //     @echo off
-//     start "" "<exe>" --logon
+//     start "" "<exe>"
 //     exit
 //
 // Explorer starts whatever is in that folder at logon, and this needs no rights of its own to be started: a text
 // file, executed by cmd.exe, naming an ordinary executable. The program it starts is the one that asks Windows
-// for elevation, and it does that after the logon advertisement - see Program.SelfElevate, and the asInvoker
-// manifest that lets it exist unelevated at all.
+// for elevation - see Program.SelfElevate, and the asInvoker manifest that lets it exist unelevated at all.
 //
 // Every other way of doing this was tried on the machine this was written for, and what each of them did is the
 // reason this is what is left:
@@ -40,17 +39,12 @@
 // The mechanism is the prompt, not a way around it
 // ------------------------------------------------
 // This program cannot hide another process's window unless it holds rights UIPI will accept, so a copy that is
-// not elevated can do exactly one thing: play a logon advertisement, because that window is its own. Both halves
-// of that are the design - the advertisement first, then the question - and this file is the half that needs no
-// rights at all.
+// not elevated can do nothing at all - it asks and leaves. That is the design, and this file is the half that
+// needs no rights: getting a copy started, unelevated, so that the program itself can ask.
 //
-// The logon argument
-// ------------------
-// The launcher starts the program with <see cref="LogonArgument" />, and that argument is the whole of how a copy
-// started at logon is told from a copy the user started themselves. Nothing else can tell them apart: the same
-// executable, the same user, and the clock is no help - the logon launch waits behind a consent prompt for as
-// long as the user takes to answer it, so a start ten minutes after logon is indistinguishable from a start at
-// logon. See Program.StartedAtLogon, which is what plays the logon advertisement.
+// No argument is passed, and there used to be one. It marked a copy started at logon so that the program could
+// play a logon advertisement before asking for elevation, which is now gone - so nothing has to tell a logon
+// start from a hand start any more, and the launcher is one line naming the program.
 //
 // One thing this does not handle, and it is worth knowing rather than discovering
 // ------------------------------------------------------------------------------
@@ -63,11 +57,9 @@
 //
 // The state, and what the menu shows
 // ----------------------------------
-// The file's own text. It is this program's when it names this executable and carries the logon argument;
-// nothing there, or something else's file under our name, counts as off - and the next click writes ours over
-// it, because the click means "start this program at logon", which is what every other program's Start with
-// Windows means too. A launcher of ours with the argument edited out counts as off as well: the copy it starts
-// plays no logon advertisement, and that difference is invisible otherwise.
+// The file's own text. It is this program's when it names this executable; nothing there, or something else's
+// file under our name, counts as off - and the next click writes ours over it, because the click means "start
+// this program at logon", which is what every other program's Start with Windows means too.
 //
 // The rule the caller depends on
 // ------------------------------
@@ -85,15 +77,6 @@ internal static class AutoStart
     /// <summary>The launcher's name, which is what the user sees in their Startup folder.</summary>
     private const string ScriptName = "Mobile Open Animation for Windows.cmd";
 
-    /// <summary>
-    /// What the launcher passes to the program, and the only thing that distinguishes the copy Windows starts at
-    /// logon from a copy the user started by hand. See Program.StartedAtLogon.
-    ///
-    /// It is not a switch the user is meant to type: the Debug menu's entry plays a logon advertisement whenever
-    /// it is asked to, and this is what the launcher does instead of that. Nothing else reads it.
-    /// </summary>
-    public const string LogonArgument = "--logon";
-
     /// <summary>The folder Windows looks in for "start this when I log on", for this user.</summary>
     private static string StartupFolder() => Environment.GetFolderPath(Environment.SpecialFolder.Startup);
 
@@ -102,8 +85,10 @@ internal static class AutoStart
     ///
     /// The `rem` lines are not decoration: a file in a Startup folder that starts a program is also the shape of
     /// something a user did not put there, so the first thing in it says what it is and how to stop it. The third
-    /// one says who asks for the rights, because the answer is not this file: the program does, after it has
-    /// played the logon advertisement.
+    /// one says who asks for the rights, because the answer is not this file: the program does, as it starts.
+    ///
+    /// No argument is passed. There used to be one - the marker that told a copy started at logon from a copy the
+    /// user started themselves, which is what the logon advertisement hung on - and the advertisement is gone.
     /// </summary>
     internal static string ScriptText() => ScriptFor(Compat.ExePath);
 
@@ -111,17 +96,34 @@ internal static class AutoStart
     /// The same launcher for a program somewhere else. Internal for probe/autostart, which puts cmd.exe's own
     /// special character - a percent sign, which a batch file expands - into a path and checks that it is
     /// written the way a batch file needs it.
+    ///
+    /// It deletes itself when the program it names is not there any more, which is what keeps a launcher from
+    /// outliving what it launches. A file in a Startup folder that runs a program that has been moved or
+    /// uninstalled is a file that fails at every logon with a console window nobody asked for and nothing else,
+    /// and there is no one to tell: the thing that would have said something about it is the program that is not
+    /// there. So the launcher says it once, by going away - and the tray menu, which reads this folder on every
+    /// right click, then shows Start with Windows as off, which is now true.
+    ///
+    /// The test and the start both name the same path, escaped the same way, and the test comes first.
     /// </summary>
     internal static string ScriptFor(string exePath)
     {
-        string command = "\"" + exePath + "\" " + LogonArgument;
+        // cmd.exe's own escaping, once, so that the path in the test is the same string as the path in the
+        // start: two spellings of it would be two things to keep in step, and only one of them is checked.
+        string command = CmdEscape("\"" + exePath + "\"");
 
         return
             "@echo off\r\n" +
             "rem Mobile Open Animation for Windows - starts the program at logon.\r\n" +
             "rem Written by the program's own tray menu. Delete this file to stop it starting at logon.\r\n" +
-            "rem The program asks Windows for administrator rights itself, after the logon advertisement.\r\n" +
-            "start \"\" " + CmdEscape(command) + "\r\n" +
+            "rem The program asks Windows for administrator rights itself, as it starts.\r\n" +
+            "rem If the program it names is gone - moved, renamed, uninstalled - it removes itself and does\r\n" +
+            "rem nothing else, so that a launcher cannot outlive what it launches.\r\n" +
+            "if not exist " + command + " (\r\n" +
+            "    del \"%~f0\"\r\n" +
+            "    exit /b\r\n" +
+            ")\r\n" +
+            "start \"\" " + command + "\r\n" +
             "exit\r\n";
     }
 
@@ -161,18 +163,6 @@ internal static class AutoStart
         bool ours = What(folder, out string why);
         Log.Write($"autostart: {why}");
         return ours;
-    }
-
-    /// <summary>
-    /// Whether a command line says this copy was started by the start-up launcher. The argument is compared
-    /// case-insensitively, which costs nothing and is the difference between the setting working and a launcher
-    /// that silently does not - the file is written by this program, but nothing stops anyone editing it.
-    /// </summary>
-    public static bool SaysLogon(string[] args)
-    {
-        foreach (string arg in args)
-            if (string.Equals(arg, LogonArgument, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
     }
 
     /// <summary>
@@ -224,12 +214,12 @@ internal static class AutoStart
     /// <summary>
     /// Whether the file is this program's launcher, and the sentence for the log that says how it was decided.
     ///
-    /// The text is recognised by containing the three things this program writes into it - its own path, the
-    /// logon argument, and the elevation request - rather than by being parsed as a batch file. A parser would
-    /// tell "this program with an argument" from "this program named as somebody else's argument", which is not a
-    /// case worth a parser for a file this program writes itself; a file that mentions our path without being
-    /// ours has to be deliberately made up, and the worst it costs is that such a file is treated as ours and
-    /// written over - which is what the switch being clicked asks for anyway.
+    /// The text is recognised by containing the two things this program writes into it - its own path and the
+    /// elevation request - rather than by being parsed as a batch file. A parser would tell "this program" from
+    /// "this program named as somebody else's argument", which is not a case worth a parser for a file this
+    /// program writes itself; a file that mentions our path without being ours has to be deliberately made up,
+    /// and the worst it costs is that such a file is treated as ours and written over - which is what the switch
+    /// being clicked asks for anyway.
     /// </summary>
     private static bool What(string folder, out string why)
     {
@@ -249,14 +239,7 @@ internal static class AutoStart
             return false;
         }
 
-        if (text.IndexOf(LogonArgument, StringComparison.OrdinalIgnoreCase) < 0)
-        {
-            why = $"{path} starts this program but does not carry {LogonArgument}, so the copy it starts would " +
-                  "play no logon advertisement; it is out of date and will be written again";
-            return false;
-        }
-
-        why = $"{path} is this program, started at logon";
+        why = $"{path} is this program";
         return true;
     }
 

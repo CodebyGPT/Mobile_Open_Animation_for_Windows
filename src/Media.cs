@@ -245,6 +245,53 @@ internal sealed class MediaPlayer : IDisposable
     }
 
     /// <summary>
+    /// How long a file is, in milliseconds, without playing a frame of it - or 0 when it is not something this
+    /// player will play, which includes a file that opens and turns out to be nothing long.
+    ///
+    /// Asked by the tray menu when the opening advertisement is switched on, and the reason it is asked with the
+    /// player rather than guessed at from the file is that this is the same answer the card would get: a file of
+    /// no bytes is caught by the size alone, but a file that is not a video at all is only caught by the thing
+    /// that would have played it. <paramref name="hwnd" /> is where the player would draw - it draws nothing
+    /// here, because nothing is ever played and duration is a fact about the item rather than about a frame.
+    ///
+    /// It pumps the message queue while it waits, and it has to: the item being set arrives as a callback on the
+    /// thread that pumps, so a loop that only slept would wait for a message that could not be delivered. That
+    /// is the same reason the card is driven by the message loop. <paramref name="timeoutMs" /> bounds one file,
+    /// so a folder of files that will not open cannot hold the menu closed indefinitely.
+    /// </summary>
+    public static int MeasureMs(string path, IntPtr hwnd, int timeoutMs)
+    {
+        var player = Open(path, hwnd, muted: true);
+        if (player == null) return 0;
+        try
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (!player.Ready && !player.Failed && clock.ElapsedMilliseconds < timeoutMs) Pump(5);
+            if (player.Failed || !player.Ready) return 0;
+            player.Refresh();
+            return Math.Max(0, player.DurationMs);
+        }
+        finally { player.Dispose(); }
+    }
+
+    /// <summary>
+    /// Drains this thread's queue for a moment, once, and dispatches what it found.
+    ///
+    /// The same three calls the program's own loop makes, for the same reason and in the same order: it is not a
+    /// loop of its own but one turn of the loop, so that nothing waiting is starved while a file is measured.
+    /// </summary>
+    private static void Pump(int ms)
+    {
+        while (Native.PeekMessageW(out var m, IntPtr.Zero, 0, 0, Native.PM_REMOVE))
+        {
+            if (m.Message == Native.WM_QUIT) return;
+            Native.TranslateMessage(ref m);
+            Native.DispatchMessageW(ref m);
+        }
+        System.Threading.Thread.Sleep(ms);
+    }
+
+    /// <summary>
     /// What the player only knows once it has the item: how long it is and how big the picture is.
     ///
     /// Called after it has said the item is set. Asking earlier answers -1 and 0x0 - a duration of "unknown"

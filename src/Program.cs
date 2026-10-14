@@ -21,7 +21,7 @@ internal static class Program
     internal const int MenuLangEn = 1, MenuLangZh = 2, MenuAutoStart = 3,
                        MenuConfig = 4, MenuAbout = 5, MenuExit = 6, MenuCloseAnim = 7,
                        MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10, MenuBlacklist = 11,
-                       MenuAdsWindow = 13, MenuAdsBootAd = 16, MenuDebugBootAd = 17;
+                       MenuSplashAd = 13;
 
     private static Settings _s = null!;
     internal static Settings S => _s;
@@ -37,18 +37,10 @@ internal static class Program
     internal static bool AutoStartOn;
 
     /// <summary>
-    /// Whether this copy is the one the start-up launcher started, and therefore the only copy a logon
-    /// advertisement is played by. Read once from the command line at start-up; see AutoStart.LogonArgument for
-    /// why the argument is the only thing that can answer it.
-    /// </summary>
-    internal static bool StartedAtLogon;
-
-    /// <summary>
     /// The argument this program gives the copy of itself it starts elevated, and the marker that keeps the two
     /// of them from doing the same work twice.
     ///
-    /// A copy carrying it has already had its advertisement decided - by itself, before it asked - so it does not
-    /// play one, and it is past the point of asking for elevation, so it does not ask again. Without a marker
+    /// A copy carrying it is past the point of asking for elevation, so it does not ask again. Without a marker
     /// here the continuation would ask for elevation again and the two would take turns forever.
     /// </summary>
     internal const string ElevatedArgument = "--elevated";
@@ -99,8 +91,7 @@ internal static class Program
     /// </summary>
     private static bool SelfElevate()
     {
-        string arguments = ElevatedArgument +
-                           (StartedAtLogon ? " " + AutoStart.LogonArgument : "");
+        string arguments = ElevatedArgument;
         Log.Write($"not elevated: asking for elevation and offering the work to the copy that gets it ({arguments})");
 
         bool started = Native.StartElevated(Compat.ExePath, arguments,
@@ -228,44 +219,22 @@ internal static class Program
         // icon is next to the clock, and being told "already running" by a second copy of something you
         // have just asked for is noise rather than information. The log keeps the evidence.
         //
-        // This copy's own two markers, read before anything is decided: whether the start-up launcher started
-        // it, and whether it is the continuation of a copy that already asked for elevation. See
-        // AutoStart.LogonArgument and ElevatedArgument.
-        StartedAtLogon = AutoStart.SaysLogon(Environment.GetCommandLineArgs());
+        // This copy's own marker, read before anything is decided: whether it is the continuation of a copy that
+        // already asked for elevation. See ElevatedArgument.
         StartedElevated = Says(Environment.GetCommandLineArgs(), ElevatedArgument);
-        Log.Write($"started at logon: {StartedAtLogon}, already elevated and continuing: {StartedElevated} " +
+        Log.Write($"already elevated and continuing: {StartedElevated} " +
                   $"(this copy's command line is " +
                   $"{string.Join(" ", Environment.GetCommandLineArgs().Skip(1))})");
 
-        // The first thing this program does about rights is ask for them, and the advertisement comes first
-        // because it is the one part of the program that does not need them: that card is this program's own
-        // window, so an unelevated copy can play it perfectly well - and if the user then says no to the
-        // consent prompt, at least the advertisement they asked for was seen.
+        // The first thing this program does about rights is ask for them, and the asking is the last thing this
+        // copy does: everything else needs the rights the answer is about, so there is nothing to do before it
+        // and no card to play first - there is no logon advertisement any more.
         //
-        // This copy is then finished. It holds no single-instance mutex, installs no hooks and draws no tray
-        // icon: nothing that has to be unique is done by a copy that is going to leave. That is what keeps the
+        // This copy then finishes. It holds no single-instance mutex, installs no hooks and draws no tray icon:
+        // nothing that has to be unique is done by a copy that is going to leave. That is what keeps the
         // single-instance rule intact with two processes briefly alive.
         if (!IsElevated() && !StartedElevated)
         {
-            AutoStartOn = AutoStart.IsEnabled();
-            ShowBootAdIfDue();
-
-            // The card drives itself on the message queue, so it needs one until it is done. AdsCard.Showing is
-            // false when nothing was shown at all, which is the common case - a manual start, or the
-            // advertisement switched off - and then this is a no-op.
-            while (AdsCard.Showing)
-            {
-                if (Native.PeekMessageW(out var m, IntPtr.Zero, 0, 0, Native.PM_REMOVE))
-                {
-                    Native.TranslateMessage(ref m);
-                    Native.DispatchMessageW(ref m);
-                }
-                else
-                {
-                    System.Threading.Thread.Sleep(2);
-                }
-            }
-
             if (!SelfElevate()) return 1;
             return 0;
         }
@@ -336,16 +305,6 @@ internal static class Program
         // state, because a menu item that silently turns the program off is a support question.
         _host.Notify($"Mobile Open Animation for Windows: watching (pid {Native.GetCurrentProcessId()})");
 
-        // The logon advertisement, if it is due. It runs on this thread like everything else - the card's
-        // timer arrives in the message loop below - so it goes up before the loop starts and its countdown is
-        // served by it.
-        //
-        // The folder the videos go in is made just before, so that a folder that has been deleted under a
-        // program that is already switched on is put back on the next run rather than waiting for one of the
-        // two switches to be clicked again.
-        NoteFolder();
-        ShowBootAdIfDue();
-
         _host.RunMessageLoop();
 
         _watcher.Dispose();
@@ -372,7 +331,7 @@ internal static class Program
     /// </summary>
     private static IntPtr OnHandoff(IntPtr hwnd, uint pid, RECT rect, int radius)
     {
-        if (!Ads.Allowed(_s.AdsVisible) || !_s.WindowAd) return IntPtr.Zero;
+        if (!_s.WindowAd) return IntPtr.Zero;
 
         string program = ProgramName(pid);
         if (_adsShown.Contains(program))
@@ -464,16 +423,6 @@ internal static class Program
     }
 
     /// <summary>
-    /// Puts the logon advertisement up, if this run has earned one.
-    ///
-    /// Asked of the same function that decides whether the menu's logon-ad entry can be clicked, rather than of
-    /// a second copy of its conditions: a program whose menu says the switch is frozen must not then run one
-    /// anyway, and the two going out of step is a mistake this codebase has already made once with the logon
-    /// task.
-    /// </summary>
-    private static void ShowBootAdIfDue() => PlayBootAd(forced: false);
-
-    /// <summary>
     /// Hands the card everything that comes from the settings rather than from the card itself: where it says
     /// what it is doing, what its mute control says, where to write down a mute the user asked for, and how it
     /// goes away.
@@ -521,94 +470,71 @@ internal static class Program
     }
 
     /// <summary>
-    /// Puts the logon advertisement up.
+    /// Switches the opening advertisement on, or says why it cannot be.
     ///
-    /// Asked of the same function that decides whether the menu's logon-ad entry can be clicked, rather than of
-    /// a second copy of its conditions: a program whose menu says the switch is frozen must not then run one
-    /// anyway, and the two going out of step is a mistake this codebase has already made once with the start-up
-    /// entry.
+    /// Switching it off is unconditional - there is nothing to check about not playing something. Switching it
+    /// on is the one setting in this program that is refused rather than obeyed, and the reason is that the
+    /// feature is nothing but the files: a switch that is on with nothing to play promises an advertisement that
+    /// never comes, and the user has no way to tell that from a program that is broken. So the folder is
+    /// checked, then the videos in it, and then - the only part a file's own bytes cannot answer - whether the
+    /// player will agree there is anything to play. See MediaPlayer.MeasureMs.
     ///
-    /// <paramref name="forced" /> skips those conditions and nothing else - the Debug menu's entry runs one
-    /// however the start-up launcher and the logon-advertisement switch are set, because looking at the
-    /// advertisement
-    /// is the only thing that entry is for. What it cannot skip is the folder being empty, which is the one
-    /// condition that is not a setting but a fact, and the submenu being hidden - see Ads.Allowed, which is a
-    /// rule about the two switches rather than one of their conditions.
-    ///
-    /// The mute is whatever the last one was left at, which the mute control keeps up to date.
+    /// The check is deliberately about *any* video in the folder rather than about the one that would be picked:
+    /// the card shuffles its candidates and passes over the ones that will not open, so one file that plays is
+    /// the whole of what the switch promises.
     /// </summary>
-    private static void PlayBootAd(bool forced)
+    private static void SwitchOnOpeningAd()
     {
-        if (!Ads.Allowed(_s.AdsVisible))
+        if (_s.WindowAd) { _s.WindowAd = false; _s.Save(); return; }
+
+        if (!Ads.FolderExists)
         {
-            Log.Write("ads: the advertisement submenu is hidden, so neither of the two switches is acted on");
+            Log.Write($"ads: no {Ads.Folder} folder, so the opening advertisement cannot be switched on");
+            SayNothingToPlay();
+            return;
+        }
+        if (!Ads.AnyVideo())
+        {
+            Log.Write($"ads: {Ads.Folder} holds no video file with anything in it, so the opening " +
+                      "advertisement cannot be switched on");
+            SayNothingToPlay();
             return;
         }
 
-        if (!forced)
+        // The files that pass the size check, measured with the player the card would use. Bounded on both axes
+        // - files tried and time per file - because this runs inside a menu click: a folder full of files that
+        // will not open must not hold the tray closed while it finds out.
+        int tried = 0;
+        foreach (string file in Ads.Videos())
         {
-            // A logon advertisement is for the copy the start-up launcher started, and for no other copy. The switch
-            // and the launcher being there are both necessary and neither is sufficient: a menu click that starts
-            // the program by hand is not a logon, and playing sixteen seconds of full-screen advertisement at
-            // every manual start is what this costs when the two are confused. Reported rather than skipped
-            // silently, because a logon where no advertisement appeared has to be answerable from the log.
-            if (!StartedAtLogon)
-            {
-                Log.Write("ads: this copy was not started at logon, so no logon advertisement" +
-                          $" (the launcher passes {AutoStart.LogonArgument}, and this copy did not get it)");
-                return;
-            }
-
-            // And the copy that asked for elevation has already had its advertisement - it played it before it
-            // asked, so that declining the prompt would not also mean losing it. This is the marker that stops it
-            // being played twice, which matters more than it sounds: the advertisement is up to six minutes long.
-            if (StartedElevated)
-            {
-                Log.Write("ads: this copy is the continuation of one that already played the logon advertisement " +
-                          $"before asking for elevation ({ElevatedArgument})");
-                return;
-            }
-
-            var ads = Ads.Menu(Ads.Available, AutoStartOn, _s.WindowAd, _s.BootAd);
-            if (!ads.BootAdUsable || !ads.BootAd)
-            {
-                Log.Write($"ads: no logon advertisement (bootAd={ads.BootAd} usable={ads.BootAdUsable})");
-                return;
-            }
+            if (new FileInfo(file).Length == 0) continue;
+            if (++tried > AdProbeMaxFiles) break;
+            int ms = MediaPlayer.MeasureMs(file, _host.Hwnd, AdProbeTimeoutMs);
+            Log.Write($"ads: {Path.GetFileName(file)} measures {ms} ms " +
+                      $"({tried} of the first {AdProbeMaxFiles} files tried)");
+            if (ms > 0) { _s.WindowAd = true; _s.Save(); return; }
         }
 
-        string[] videos = Ads.Videos();
-        if (videos.Length == 0)
-        {
-            Log.Write($"ads: the logon advertisement is due but Ads is empty ({Ads.Folder})");
-            return;
-        }
-
-        bool muted = _s.AdsMuted;
-        WireCard(0);
-        Log.Write($"ads: {videos.Length} videos, logon advertisement for at most " +
-                  $"{Ads.CapSeconds}s, muted={muted}{(forced ? ", asked for from Debug mode" : "")}");
-        var card = AdsCard.ShowBoot(videos, Ads.CapSeconds, muted, _s.CloseAnimation);
-        if (card == null) Log.Write("ads: a card is already up, so no logon advertisement");
+        Log.Write($"ads: none of the first {tried} video file(s) in {Ads.Folder} would play, so the opening " +
+                  "advertisement cannot be switched on");
+        SayNothingToPlay();
     }
 
     /// <summary>
-    /// Makes the folder the videos go in, with the note in it that says what goes there, so that the feature
-    /// being asked for at all leaves a note of where the videos go rather than an advertisement with nothing to
-    /// play. Nothing is said when the feature has not been asked for.
-    ///
-    /// Asking for it includes merely being able to see the submenu, not only switching one of the two kinds on:
-    /// the submenu is the feature as far as the user is concerned, and a user who has just revealed it - see
-    /// the About box - is the one who most needs to be told where the videos go. Neither switch is needed for
-    /// the note, and an empty folder is not something either of them can play, so nothing here changes what may
-    /// be clicked: see Ads.Available.
+    /// How many files switching the advertisement on will open, and how long it gives each. Small because this
+    /// is a menu click: the files it looks at are the ones the user just put there, so the first is the one that
+    /// answers, and a folder of junk is refused after a second or two rather than after a minute.
     /// </summary>
-    private static void NoteFolder()
-    {
-        if (!_s.AdsVisible && !_s.WindowAd && !_s.BootAd) return;
-        Ads.EnsureFolder(Strings.T("AdsNote"), out string how);
-        Log.Write($"ads: {Ads.Folder} {how}");
-    }
+    private const int AdProbeMaxFiles = 3, AdProbeTimeoutMs = 1200;
+
+    /// <summary>
+    /// What the user is told when there is nothing to play: where the videos go, that making the folder is
+    /// their job, and that the file's name is worth choosing. An error rather than a warning, because the
+    /// switch they clicked has not been switched on.
+    /// </summary>
+    private static void SayNothingToPlay()
+        => Native.MessageBoxW(IntPtr.Zero, Strings.T("AdsNeeded"), "Mobile Open Animation for Windows",
+                              0x00000010 /* MB_ICONERROR */);
 
     /// <summary>
     /// A tray menu entry's name, for the log. The ids are internal and would mean nothing to whoever reads
@@ -625,10 +551,8 @@ internal static class Program
         MenuCloseAnim => "Window close animation",
         MenuDynCorner => "Dynamic corner radius",
         MenuReturnOrigin => "Return animation",
-        MenuAdsWindow => "Ad > Window ad",
-        MenuAdsBootAd => "Ad > Logon full-screen ad",
+        MenuSplashAd => "Opening ad",
         MenuDebugEnable => "Debug mode",
-        MenuDebugBootAd => "Debug mode > Play the logon ad",
         MenuBlacklist => "Blacklist",
         _ => $"unknown ({id})",
     };
@@ -663,37 +587,11 @@ internal static class Program
                     break;
                 }
                 _s.ReturnToOrigin = !_s.ReturnToOrigin; _s.Save(); break;
-            // Either kind switched on makes the folder the videos go in, as the note of where to put them, and
-            // only if it is not already there - a folder that exists is the one being filled. See
-            // Ads.EnsureFolder for why it is compared by name instead of asked for with Directory.Exists.
-            //
-            // Done when a kind is switched *on* rather than when the feature is first asked for, because there
-            // is no switch for the feature itself any more: the two entries are switches of their own, and the
-            // moment to make the folder is the moment one of them is switched on with nothing there to play.
-            // Seeing the submenu at all counts as asking for it now, so this is a second chance rather than the
-            // only one - see NoteFolder, which is also what runs at startup.
-            case MenuAdsWindow:
-                _s.WindowAd = !_s.WindowAd;
-                NoteFolder();
-                _s.Save();
-                break;
-            case MenuAdsBootAd:
-                // Refused as well as frozen, and asked of the same function that drew the menu rather than of
-                // a second copy of its conditions: a menu drawn before Start with Windows was removed can
-                // still deliver this click, and a logon advertisement with no logon to run at is not one.
-                if (!Ads.Menu(Ads.Available, AutoStartOn, _s.WindowAd, _s.BootAd).BootAdUsable)
-                {
-                    Log.Write("ads: the logon-advertisement switch is frozen; refused");
-                    break;
-                }
-                _s.BootAd = !_s.BootAd;
-                NoteFolder();
-                _s.Save();
-                break;
-            case MenuDebugBootAd:
-                // The one way to run an advertisement with the switches against it, so it says so: a log that
-                // showed an advertisement nothing asked for would otherwise read as a bug.
-                PlayBootAd(forced: true);
+            case MenuSplashAd:
+                // The one entry that can refuse: see SwitchOnOpeningAd. Nothing is created for it - the folder
+                // and the videos in it are the feature, and a program that made the folder would be making half
+                // of what the user is being asked for.
+                SwitchOnOpeningAd();
                 break;
             case MenuDebugEnable:
             {
@@ -772,17 +670,12 @@ internal static class Program
                 // release. The ini path that used to be the last line is gone - "Open config directory", a
                 // few entries up, is where that is asked for.
                 //
-                // True means the launch-ad code was played into the box while it was open. That is the whole
-                // way in: reveal the entry, then open the menu the code's last step asked for, so the entry
-                // that was just revealed is on screen rather than being something to go and look for.
-                if (AboutDialog.Show(IntPtr.Zero))
-                {
-                    Log.Write("about: the launch-ad code was entered; revealing the menu entry");
-                    _s.AdsVisible = true;
-                    _s.Save();
-                    NoteFolder();
-                    _host.ShowMenu();
-                }
+                // And that is all it is. It used to watch for thirteen keys and count clicks on its own icon,
+                // with a low-level keyboard hook and a low-level mouse hook to see them, and the last key of
+                // the sequence revealed the advertisement entry in this menu. Nothing is hidden any more, so
+                // there is nothing to reveal and no reason for a box to be listening to the whole machine's
+                // input while it is open.
+                AboutDialog.Show(IntPtr.Zero);
                 break;
             case MenuBlacklist:
                 // A window, not a dialog box and not a modal one: it opens and this returns, so the animation
@@ -1164,33 +1057,17 @@ internal sealed class TrayHost
             (Program.S.DynamicCorner ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuDynCorner, Strings.T("DynamicCorner"));
 
-        // Hidden until it is asked for, and the only entry in this menu that is: an entertainment feature is
-        // not something to advertise in a menu. What is under it is the two kinds of advertisement, and what
-        // can be clicked is worked out in one place - Ads.Menu - rather than here.
+        // And the opening advertisement, next to the animation switches rather than under a submenu of its own.
         //
-        // There is no entry for the feature itself. Two switches that each say what they do do not need a
-        // third saying that either of them might, and a master switch is one more thing for the ticks to
-        // disagree with.
-        //
-        // The whole submenu is frozen while Ads holds nothing to play, because nothing under it can do
-        // anything then. A frozen popup cannot be opened, which is the point: entries that could still be
-        // ticked would be promising something that cannot happen. The ticks are left as the ini has them.
-        if (Program.S.AdsVisible)
-        {
-            var ads = Ads.Menu(Ads.Available, Program.AutoStartOn, Program.S.WindowAd, Program.S.BootAd);
-            uint frozen = ads.Submenu ? 0u : Native.MF_GRAYED;
-
-            IntPtr adsMenu = Native.CreatePopupMenu();
-            Native.AppendMenuW(adsMenu, Native.MF_STRING | frozen |
-                (ads.WindowAd ? Native.MF_CHECKED : Native.MF_UNCHECKED),
-                (IntPtr)Program.MenuAdsWindow, Strings.T("AdsWindow"));
-            Native.AppendMenuW(adsMenu, Native.MF_STRING |
-                (ads.BootAdUsable ? 0u : Native.MF_GRAYED) |
-                (ads.BootAd ? Native.MF_CHECKED : Native.MF_UNCHECKED),
-                (IntPtr)Program.MenuAdsBootAd, Strings.T("AdsBootAd"));
-
-            Native.AppendMenuW(menu, Native.MF_POPUP | frozen, adsMenu, Strings.T("Ads"));
-        }
+        // It used to be hidden behind a thirteen-key code played into the About box, on the argument that a
+        // menu is not a place to advertise an entertainment feature. What that cost was a feature nobody could
+        // find and a box that had to listen to every key press and every click in the system to reveal it; what
+        // it is now is one toggle that says what it does, which is what the other three are and what the user
+        // can act on. It was hidden and refused; it is visible and refuses only when there is nothing to play -
+        // see SwitchOnOpeningAd, which is the whole of what clicking it does.
+        Native.AppendMenuW(menu, Native.MF_STRING |
+            (Program.S.WindowAd ? Native.MF_CHECKED : Native.MF_UNCHECKED),
+            (IntPtr)Program.MenuSplashAd, Strings.T("AdsWindow"));
 
         Native.AppendMenuW(menu, Native.MF_SEPARATOR, IntPtr.Zero, "");
         Native.AppendMenuW(menu, Native.MF_POPUP, lang, Strings.T("Language"));
@@ -1210,15 +1087,6 @@ internal sealed class TrayHost
             (Program.S.DebugMode ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuDebugEnable, Strings.T("DebugEnable"));
         Native.AppendMenuW(debug, Native.MF_STRING, (IntPtr)Program.MenuBlacklist, Strings.T("Blacklist"));
-        // The logon advertisement on demand, so that it can be looked at without waiting for a logon and
-        // without turning the logon-ad switch on. It is here rather than in the launch-ad submenu because it
-        // is not a setting: it plays the advertisement once, now, and changes nothing.
-        //
-        // Shown only while that submenu is, which is the same switch and on purpose: this is the one entry
-        // that would otherwise tell whoever opened Debug mode that the feature exists at all.
-        if (Program.S.AdsVisible)
-            Native.AppendMenuW(debug, Native.MF_STRING | (Ads.Available ? 0u : Native.MF_GRAYED),
-                (IntPtr)Program.MenuDebugBootAd, Strings.T("DebugBootAd"));
         Native.AppendMenuW(menu, Native.MF_POPUP, debug, Strings.T("DebugMode"));
 
         Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuConfig, Strings.T("OpenConfig"));
