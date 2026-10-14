@@ -1174,6 +1174,13 @@ internal sealed class Animator
     public void KeepHeldWindowHidden()
     {
         if (HeldWindow == IntPtr.Zero) { _heldLogged = false; return; }
+
+        // The hold is renewed here rather than taken once where the advertisement starts. This runs on the
+        // tick, which ticks whether or not anything is animating, so a second is the longest a window can
+        // stay invisible without the advertisement itself saying it is still there - and the guard's own
+        // sweep, which is not this thread, puts it back when that second passes. See HideGuard.HoldRenewMs.
+        _guard.Hold(HeldWindow, HideGuard.HoldRenewMs);
+
         long now = Compat.TickCount64;
         if (now - _heldReassert < ReassertIntervalMs) return;
         _heldReassert = now;
@@ -1210,7 +1217,6 @@ internal sealed class Animator
     public void Tick()
     {
         Log.Flush();                   // buffered log lines reach the file here, never on the hot path
-        _guard.ReleaseExpired();       // watchdog: nothing stays hidden past its deadline
 
         long now = Compat.TickCount64;
         KeepHeldWindowHidden();

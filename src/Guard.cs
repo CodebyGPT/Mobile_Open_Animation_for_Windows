@@ -1,13 +1,26 @@
 // Hiding someone else's window is the dangerous part of this program, so it lives in one
-// small class with one rule:
+// small class with three rules:
 //
 //     EVERY window we hide is restored, on EVERY exit path, exactly once.
+//     NOTHING is ever handed back at alpha nought.
+//     A hold that is not renewed expires on its own, and the sweep that enforces that does not
+//     depend on the animation thread.
 //
-// The failure this is built to make impossible is the one the Windhawk review caught in
-// the original mod: an exit path that left a window at alpha 0, making it invisible for
-// good. So: the original style and alpha are recorded before anything is touched, the
-// restore is idempotent, and it is called from the normal path, the deadline sweep, the
-// unhandled-exception handler and shutdown.
+// The first rule is the one the Windhawk review caught the original mod on: an exit path that left a
+// window at alpha 0, making it invisible for good. So the original style and alpha are recorded before
+// anything is touched, the restore is idempotent, and it is called from the normal path, the deadline
+// sweep, the unhandled-exception handler and shutdown.
+//
+// The second rule is what the first one was missing, and it is a bug that reached users. The alpha is
+// not ours: it is a property the application sets for itself, and an application that creates its window
+// transparent and fades it in owns it too. Handing back the value we *found* - which can be the nought of
+// the first frame of such a fade, or a value from the middle of one - is what made windows invisible for
+// good, because alpha nought is invisible *and* shown: Windows and the application both believe the
+// window is on screen, so nothing - not the taskbar, not the application - ever writes that alpha again.
+// The value handed back is therefore the one that is there now if the application has written its own,
+// and otherwise the recorded one only when that was not nought, and full visibility when it was.
+//
+// probe/guard drives all of this against real windows.
 
 namespace Moa;
 
@@ -102,14 +115,17 @@ internal sealed class HideGuard
     }
 
     /// <summary>
-    /// Keeps one window hidden for longer than the watchdog would.
+    /// Moves one window's deadline out by <paramref name="ms"/>, which is what a caller that means to keep
+    /// the window does every frame.
     ///
     /// The watchdog exists so that nothing can stay invisible for good, and its deadline is the same for every
     /// window because it is there to cover a hide that something forgot. This is the opposite case: a caller
-    /// that knows exactly how long it means to keep the window - an advertisement that covers it, and the cap
-    /// on that advertisement - and says so. The deadline is moved out rather than removed, so a caller that
-    /// dies without saying anything still cannot leave a window invisible for ever: the watchdog puts it back
-    /// at the moment the advertisement could no longer have been up anyway.
+    /// that knows it wants the window for longer - an advertisement covering it - says so, and says so again
+    /// while it still wants it. That the hold has to be *renewed* is the point: a hold taken once for the
+    /// advertisement's whole length is six minutes in which a card that died, hung or crashed without
+    /// releasing leaves a transparent window behind it, and nothing but the deadline would ever put that
+    /// window back. Renewed, the same death gives the window back a second after the renewals stop. See
+    /// Animator.KeepHeldWindowHidden, which renews it from the tick, and HoldRenewMs.
     /// </summary>
     public void Hold(IntPtr hwnd, int ms)
     {
@@ -197,10 +213,23 @@ internal sealed class HideGuard
 
         if (e.WasLayered)
         {
-            // The app layered its own window: give it back its own alpha. Never 255 blindly,
-            // or we would overwrite an alpha the app set for itself.
-            if ((ex & Native.WS_EX_LAYERED) != 0)
-                Native.SetLayeredWindowAttributes(e.Hwnd, 0, e.OrigAlpha, Native.LWA_ALPHA);
+            // The application layered its own window, so the alpha it has now is the newest thing known
+            // about what it should look like - and if the application has written one while we held the
+            // window, it is the application's answer and not ours to overrule. Left exactly as it is.
+            if ((ex & Native.WS_EX_LAYERED) == 0) return;
+            if (!Native.GetLayeredWindowAttributes(e.Hwnd, out _, out byte now, out _) || now != 0) return;
+
+            // Ours, then, or nobody's: and this is the one value that must never be written back. Alpha
+            // nought is invisible *and* shown, so Windows and the application both think this window is on
+            // screen and neither will ever write that alpha again - the window is gone for good, and
+            // clicking its taskbar button only activates something that is already "visible". More visible
+            // than the application wanted is a cosmetic fault; invisible is not a window any more. See the
+            // header.
+            byte back = e.OrigAlpha != 0 ? e.OrigAlpha : (byte)255;
+            Native.SetLayeredWindowAttributes(e.Hwnd, 0, back, Native.LWA_ALPHA);
+            if (e.OrigAlpha == 0)
+                Log.Write($"hwnd={e.Hwnd} was found at alpha 0 and nothing wrote one while we held it; " +
+                          "handing it back visible rather than invisible for good");
             return;
         }
 
@@ -213,6 +242,54 @@ internal sealed class HideGuard
 
             // Only clear the bit we set; leave any other style change the app made alone.
             Native.SetWindowLong(e.Hwnd, Native.GWL_EXSTYLE, ex & ~Native.WS_EX_LAYERED);
+        }
+    }
+
+    /// <summary>
+    /// How long a hold lasts before it has to be renewed, and how often the sweep looks.
+    ///
+    /// A hold is taken and renewed by the caller that means to keep the window - an advertisement, which
+    /// knows it wants the window for as long as the card is up - and it expires a second after the last
+    /// renewal. The alternative, a hold taken once for the advertisement's whole length, is six minutes in
+    /// which a card that died without releasing leaves a transparent window behind it; renewed, the same
+    /// death gives the window back a second later.
+    /// </summary>
+    public const int HoldRenewMs = 1000;
+
+    /// <summary>How often the sweep thread looks for a hide that has run out.</summary>
+    private const int SweepIntervalMs = 250;
+
+    private Thread? _sweeper;
+    private volatile bool _stopSweeper;
+
+    /// <summary>
+    /// Starts the thread that puts expired hides back, and it is deliberately a thread of its own: the
+    /// animation thread is the one that talks to other processes' windows, and talking to a window that has
+    /// stopped answering can block. The last line of defence must not be able to block behind the thing it
+    /// is a defence against.
+    /// </summary>
+    public void Start()
+    {
+        if (_sweeper != null) return;
+        _stopSweeper = false;
+        _sweeper = new Thread(Sweep) { IsBackground = true, Name = "MoaHideSweeper" };
+        _sweeper.Start();
+    }
+
+    /// <summary>Stops the sweep thread. Anything still hidden is the caller's to release.</summary>
+    public void Stop()
+    {
+        _stopSweeper = true;
+        try { _sweeper?.Join(500); } catch { }
+        _sweeper = null;
+    }
+
+    private void Sweep()
+    {
+        while (!_stopSweeper)
+        {
+            try { ReleaseExpired(); } catch { /* a sweeper that throws once must keep sweeping */ }
+            Thread.Sleep(SweepIntervalMs);
         }
     }
 }

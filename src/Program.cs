@@ -273,6 +273,10 @@ internal static class Program
         _host.Create();
 
         _guard = new HideGuard(_s.MaxHideMs);
+        // The watchdog gets a thread of its own. It used to sweep from the animation thread's tick, which is
+        // the thread that talks to other processes' windows - so the thing that exists to put a window back
+        // after something went wrong could itself be blocked by the kind of window that makes things go wrong.
+        _guard.Start();
         _anim = new Animator(_s, _guard);
         _watcher = new Watcher(_s, _anim.OnWindowCreated, _anim.OnWindowShown,
                                _anim.OnWindowClosed, _host.Alert);
@@ -315,6 +319,9 @@ internal static class Program
         _watcher.Dispose();
         _anim.Stop();
         _guard.ReleaseAll();
+        // After the release, never before: the sweeper is the last line of defence and it is stopped only
+        // once there is nothing left for it to defend.
+        _guard.Stop();
         _host.Destroy();
         return 0;
     }
@@ -363,9 +370,13 @@ internal static class Program
         // The hold is what keeps the guard's watchdog from giving the window back mid-advertisement: the
         // watchdog's deadline is twenty seconds and the cap is six minutes, so without it a long advertisement
         // would be sitting over a window that had quietly come back.
+        // The hold the advertisement takes, and it is renewed by the animator's tick for as long as the
+        // advertisement is up - see Animator.KeepHeldWindowHidden and HideGuard.HoldRenewMs. Taken once for
+        // the advertisement's whole length, which is what this used to be, it is six minutes in which a card
+        // that died without releasing leaves a transparent window behind it.
         _anim.KeepHidden = hwnd;
         _anim.HeldWindow = hwnd;
-        _guard.Hold(hwnd, Ads.CapSeconds * 1000 + 5000);
+        _guard.Hold(hwnd, HideGuard.HoldRenewMs);
         card.WhileUp = _anim.KeepHeldWindowHidden;
         // The window comes along when the advertisement is dragged. It is invisible while this happens, and that
         // is the point: the advertisement is meant to be the window, so the two being in different places is
