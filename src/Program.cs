@@ -296,10 +296,15 @@ internal static class Program
         // post its frame ticks to.
         _anim.Start(_host.Hwnd);
 
-        // The launcher is read once here. ShowMenu must not read a file on every right click, and what the read found
-        // is logged either way, including what it was looking for when there is something under our name that is
-        // not ours.
-        AutoStartOn = AutoStart.IsEnabled();
+        // The launcher is looked at once here, before the menu can be opened, and what the look found is logged
+        // either way - including what it was looking for, when something under our name is not ours.
+        AutoStartOn = AutoStart.Look(_s.StartupHash, out string autoWhy) == AutoStart.State.Ours;
+        Log.Write($"autostart: {autoWhy}");
+
+        // And the opening advertisement, on the same terms: the setting says what the user asked for, the folder
+        // says whether it can still be done, and where they disagree the setting is what gets corrected. See
+        // ReconcileOpeningAd, which is also called when the menu is drawn and never on a timer.
+        ReconcileOpeningAd();
 
         // Running means working, and exiting means not working: there is deliberately no paused
         // state, because a menu item that silently turns the program off is a support question.
@@ -528,13 +533,43 @@ internal static class Program
     private const int AdProbeMaxFiles = 3, AdProbeTimeoutMs = 1200;
 
     /// <summary>
-    /// What the user is told when there is nothing to play: where the videos go, that making the folder is
-    /// their job, and that the file's name is worth choosing. An error rather than a warning, because the
-    /// switch they clicked has not been switched on.
+    /// Turns the opening advertisement off when there is nothing left for it to play, and does nothing when
+    /// there is.
+    ///
+    /// The same shape as the start-up switch's reconcile: the setting says what the user asked for, the folder
+    /// says whether it can still be done, and when the two disagree it is the setting that is corrected. Called
+    /// at start-up and on every right click - the three moments the user named - and never on a timer: what
+    /// changes underneath it is a folder the user edits, so there is nothing to watch for, and a program that
+    /// polled a directory to find out would be doing work for a change that cannot happen on its own.
+    ///
+    /// What is checked is the cheap half: the folder, and a video file with something in it. Whether the player
+    /// will play it is only asked when the switch is switched on, because that is the question that opens files.
+    /// So a folder emptied of its *playable* videos is caught here, and a folder whose only video is corrupt is
+    /// caught by the next click; the advertisement itself checks again anyway, at the handoff, before it puts a
+    /// card up. See OnHandoff.
+    /// </summary>
+    internal static void ReconcileOpeningAd()
+    {
+        if (!_s.WindowAd) return;
+        if (Ads.AnyVideo()) return;
+
+        Log.Write($"ads: {Ads.Folder} no longer holds a video with anything in it, so the opening " +
+                  "advertisement is being switched off");
+        _s.WindowAd = false;
+        _s.Save();
+    }
+
+    /// <summary>
+    /// What the user is told when there is nothing to play: make the folder, put a named video in it, and what
+    /// this machine will play.
+    ///
+    /// A question mark rather than the red X this started as, and the user asked for it: nothing has failed here
+    /// - the program was asked to do something it cannot do yet, and what it needs is for the user to go and do
+    /// one thing. It is the dialog's own icon, drawn by the system; nothing here draws anything.
     /// </summary>
     private static void SayNothingToPlay()
-        => Native.MessageBoxW(IntPtr.Zero, Strings.T("AdsNeeded"), "Mobile Open Animation for Windows",
-                              0x00000010 /* MB_ICONERROR */);
+        => Native.MessageBoxW(IntPtr.Zero, Strings.T("AdsNeeded"), Strings.T("AdsNeededTitle"),
+                              0x00000020 /* MB_ICONQUESTION */);
 
     /// <summary>
     /// A tray menu entry's name, for the log. The ids are internal and would mean nothing to whoever reads
@@ -622,13 +657,13 @@ internal static class Program
             case MenuLangZh: _s.Language = Lang.ChineseSimplified; Strings.Use(_s.Language); _s.Save(); break;
             case MenuAutoStart:
             {
-                // Reconcile first, act second. The check mark can be stale - the file may have been written or deleted by
-                // something else since the menu was drawn, and Windows' Start-up settings page and Task Manager's
-                // Start-up tab both edit this folder - so if the display disagrees with reality, the click's job
-                // is to correct the display, and nothing is written or deleted at all. Only when the display
-                // was accurate is the click read as "I want the opposite of this".
+                // Reconcile first, act second. The check mark can be stale - the file may have been written,
+                // deleted or edited by something else since the menu was drawn, and Windows' Start-up settings
+                // page and Task Manager's Start-up tab both edit this folder - so if the display disagrees with
+                // reality, the click's job is to correct the display, and nothing is written or deleted at all.
+                // Only when the display was accurate is the click read as "I want the opposite of this".
                 bool shown = AutoStartOn;
-                bool real = AutoStart.IsEnabled();
+                bool real = AutoStart.Look(_s.StartupHash, out _) == AutoStart.State.Ours;
                 if (real != shown)
                 {
                     Log.Write($"autostart: menu showed {shown}, the launcher is {real}; correcting the menu only");
@@ -638,21 +673,36 @@ internal static class Program
 
                 bool wanted = !real;
 
-                // No question is asked about a task that is already there and is not this program's. Two ways
-                // that happens and they cannot be told apart from the XML: something else put one there, or this
-                // program has been moved since it wrote one and what is left is its own stale task. Either way
-                // the switch that was just clicked is a request to start this program at logon, and registering
-                // the file is the whole of what it means - which is what every other program's Start with
-                // Windows does, and what the menu's own tick, reconciled above, has just told the user the state
-                // of.
+                // A file of that name is already there and is not the one this program wrote - edited, somebody
+                // else's, or written before the ini lost its record of it. Writing ours over it is a decision
+                // about a file the program did not put there, so it is the user's: asked, and the file left
+                // alone on anything but the first answer. See Native.Ask, which is the only dialog here that can
+                // name its own buttons.
+                if (wanted && AutoStart.Look(_s.StartupHash, out _) == AutoStart.State.Changed)
+                {
+                    bool overwrite = Native.Ask(Strings.T("AutoStartConflictTitle"),
+                                                Strings.T("AutoStartConflict"), "",
+                                                Strings.T("AutoStartOverwrite"), Strings.T("AutoStartCancel"));
+                    Log.Write($"autostart: a file under our name is not ours; the user said " +
+                              $"{(overwrite ? "overwrite" : "leave it alone")} ({Native.AskNote ?? "as asked"})");
+                    if (!overwrite) break;
+                }
+
+                // The hash of what was written is kept, and that is what makes the next look able to tell this
+                // file from one that has been edited since. Turning the launcher off records nothing, which is
+                // how "no launcher of ours" is written down.
                 string err;
-                bool now = AutoStart.Apply(wanted, out err);
+                bool now = AutoStart.Apply(wanted, out string hash, out err);
                 if (now != wanted)
                     Native.MessageBoxW(IntPtr.Zero,
                         Strings.T("AutoStartFailed") + "\n\n" + err,
                         "Mobile Open Animation for Windows", 0x00000030 /* MB_ICONWARNING */);
                 else
+                {
+                    _s.StartupHash = hash;
+                    _s.Save();
                     AutoStartOn = now;
+                }
                 break;
             }
             case MenuConfig:
@@ -1008,15 +1058,21 @@ internal sealed class TrayHost
     /// <summary>Opens the tray menu. Public because the About box's launch-ad code ends by asking for it.</summary>
     public void ShowMenu()
     {
-        // Re-checked here and not only at start-up: the file can be deleted by anything else on the machine - the user
-        // emptying their Startup folder, Windows' Start-up settings page, Task Manager's Start-up tab, a cleanup
-        // tool - and a check mark that disagrees with reality is worse than none at all. Costs one file read before
-        // the menu appears.
-        // IsEnabled, NOT a bare existence check. The menu and the click handler have to use the
-        // same definition: when the menu used existence alone and the handler used the full check,
-        // the two disagreed, so every click concluded the display was stale and corrected
-        // the menu instead of ever reaching the write or the delete.
-        Program.AutoStartOn = AutoStart.IsEnabled();
+        // Re-checked here and not only at start-up: the file can be deleted or edited by anything else on the
+        // machine - the user emptying their Startup folder, Windows' Start-up settings page, Task Manager's
+        // Start-up tab, a cleanup tool, an editor - and a check mark that disagrees with reality is worse than
+        // none at all. Costs one file read and one hash before the menu appears.
+        //
+        // Look, NOT a bare existence check, and the same call the click handler makes: when the menu used
+        // existence alone and the handler used the stricter test, the two disagreed, so every click concluded the
+        // display was stale and corrected the menu instead of ever reaching the write or the delete. The hash is
+        // what makes "the file is there" and "the file is ours" the same question here as there.
+        Program.AutoStartOn = AutoStart.Look(Program.S.StartupHash, out _) == AutoStart.State.Ours;
+
+        // And the same for the opening advertisement, which is on the same terms: a folder that has been
+        // emptied stops the switch from claiming an advertisement it can no longer play. Event-driven, like
+        // everything else here - see ReconcileOpeningAd.
+        Program.ReconcileOpeningAd();
 
         IntPtr menu = Native.CreatePopupMenu();
         var lang = Native.CreatePopupMenu();

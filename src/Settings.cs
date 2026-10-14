@@ -31,6 +31,19 @@ internal sealed class Settings
     public bool AdsMuted = true;
 
     /// <summary>
+    /// The SHA-256 of the start-up launcher this program wrote, lowercase hex, or "" when it has never written
+    /// one.
+    ///
+    /// The *state* of Start with Windows is still read from the Startup folder rather than from here - what is in
+    /// that folder is the truth, and a copy here could only ever disagree with it. This is not that copy: it is
+    /// what the program expects to find there, so that a file with the right name and the wrong contents can be
+    /// told from the one it wrote. Without it the menu's tick would say on for any file that starts this program,
+    /// including one somebody edited afterwards, which is a start-up the program does not control and must not
+    /// claim. See AutoStart.Look, and the ini's own note about this key.
+    /// </summary>
+    public string StartupHash = "";
+
+    /// <summary>
     /// Whether a window animates as it closes. On by default, and checked per close rather than at
     /// startup, so turning it off takes effect on the very next window.
     /// </summary>
@@ -210,6 +223,10 @@ internal sealed class Settings
                 case "language": s.Language = val.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? Lang.English : Lang.ChineseSimplified; break;
                 case "windowad": s.WindowAd = Bool(val, s.WindowAd); break;
                 case "adsmuted": s.AdsMuted = Bool(val, s.AdsMuted); break;
+                // Hex, kept as it stands rather than parsed: empty means "no launcher of ours has been
+                // recorded", which is what a settings file written from defaults says, and what the menu reads as
+                // Start with Windows being off.
+                case "startupscripthash": s.StartupHash = val.Trim(); break;
                 case "closeanimation": s.CloseAnimation = Bool(val, s.CloseAnimation); break;
                 case "dynamiccorner": s.DynamicCorner = Bool(val, s.DynamicCorner); break;
                 case "returntoorigin": s.ReturnToOrigin = Bool(val, s.ReturnToOrigin); break;
@@ -251,8 +268,10 @@ internal sealed class Settings
         sb.AppendLine("; Mobile Open Animation for Windows - window open animation, standalone");
         sb.AppendLine("; The tray menu edits the entries marked [menu]; edit the rest here.");
         sb.AppendLine("; NOTE: Start with Windows is deliberately NOT stored in this file. The state is");
-        sb.AppendLine("; whether this program's start-up launcher is in your own Startup folder and names this");
-        sb.AppendLine("; program, read from that folder, and a copy here could only ever disagree with it.");
+        sb.AppendLine("; whether this program's launcher is in your own Startup folder, read from that folder,");
+        sb.AppendLine("; and a copy here could only ever disagree with it. What IS stored here is the hash of");
+        sb.AppendLine("; the launcher this program wrote - StartupScriptHash below - so that a file of that");
+        sb.AppendLine("; name whose contents have changed since is not mistaken for the program's own.");
         sb.AppendLine();
         sb.AppendLine("[general]");
         // This line is the whole reason settings survive a restart: Load regenerates the file from
@@ -270,6 +289,11 @@ internal sealed class Settings
         sb.AppendLine("; whether advertisements play silently. On by default, and written by the mute control");
         sb.AppendLine("; on the card, which remembers between showings.");
         sb.AppendLine($"AdsMuted={(AdsMuted ? 1 : 0)}");
+        sb.AppendLine("; not a setting: the SHA-256 of the start-up launcher this program wrote into your own");
+        sb.AppendLine("; Startup folder. Empty means it has never written one, which reads as Start with");
+        sb.AppendLine("; Windows being off. Deleting this line is the same as deleting the launcher: the menu");
+        sb.AppendLine("; stops claiming it, and the next click writes a new one over whatever is there.");
+        sb.AppendLine($"StartupScriptHash={StartupHash}");
         sb.AppendLine($"CloseAnimation={(CloseAnimation ? 1 : 0)}");
         sb.AppendLine("; [menu] dynamic rounding. On, an opening card begins as a rounded square, 22% of");
         sb.AppendLine("; its own side, and squares off into the window's own corner as it grows, and a");
@@ -336,6 +360,7 @@ internal sealed class Settings
                   $" startSize={StartSizePx} close={OnOff(CloseAnimation)}" +
                   $" dynamicCorner={OnOff(DynamicCorner)} returnToOrigin={OnOff(ReturnToOrigin)}" +
                   $" adsWindow={OnOff(WindowAd)}" +
+                  $" startupHash={(StartupHash.Length == 0 ? "none" : StartupHash.Substring(0, 8))}" +
                   $" debug={OnOff(DebugMode)} excluded={ExcludedClasses.Count} classes," +
                   $" {ExcludedProcesses.Count} processes");
     }
@@ -422,21 +447,32 @@ internal static class Strings
                               "回退动画（实验性）"),
         // The one advertisement entry, on the tray menu beside the animation switches and visible like them.
         ["AdsWindow"]    = ("Opening ad", "开屏广告"),
-        // What the user is told when switching it on finds nothing to play. Both halves matter and both are
-        // heard here and nowhere else: where the videos go, and that making the folder is the user's job - the
-        // program used to make it and leave a note in it, which was the wrong answer for a folder that is the
-        // feature's whole content rather than a convenience. Case-insensitive because Ads.FindFolder compares
-        // the name that way, and named because the advertisement shows a file's name and searches for it.
+        // What the user is told when switching it on finds nothing to play: a question, and its own title, and
+        // the title is what the window says rather than the program's name - the program's name over a question
+        // about a folder is the same non-answer as an error box titled "Error". The body says the two things
+        // that are the user's to do - make the folder, name the file - and the one thing the program cannot know
+        // for them, which is what this machine's Media Foundation will play. The folder's name is compared
+        // case-insensitively (see Ads.FindFolder), and the file's name is what the advertisement shows and
+        // searches for, which is why it is worth choosing.
+        ["AdsNeededTitle"] = ("No usable content found", "未找到可用内容"),
         ["AdsNeeded"]    =
-            ("There is nothing to play, so the opening ad is still switched off.\n\n" +
-             "Put a video file of your own in an \"Ads\" subfolder beside this program. The folder's name " +
-             "does not have to be spelled the way it is here - \"ads\" is the same folder to Windows - and it " +
-             "has to be made by hand: this program does not create it. The file's name is what the " +
-             "advertisement shows and searches for, so give it one worth reading.",
-             "没有可以播放的内容，开屏广告保持关闭。\n\n" +
-             "请在本程序旁边手动创建一个 \"Ads\" 子目录（名称大小写不敏感，\"ads\" 与 \"Ads\" 是同一个目录，"
-             + "本程序不会替你创建），并把你自己命名好的视频文件放进去。\n" +
-             "广告会显示并搜索这个文件的文件名，所以请给它起一个值得一看的名字。"),
+            ("Create an \"Ads\" subfolder in this program's configuration directory and put your named video " +
+             "files in it.\n\n" +
+             "The video container and codec formats that will play are decided by this machine's system. " +
+             "H.264 + AAC in an MP4 is recommended.",
+             "请在本程序配置目录中新建“Ads”子目录，并将命名好的视频文件放入该子目录中。\n\n" +
+             "受支持的视频封装和编码格式均由本机系统决定，推荐使用 H.264 + AAC 的 MP4。"),
+        // Asked before a start-up launcher is written over one that is already there and is not the file this
+        // program wrote - edited, or somebody else's, or written before the ini was reset. Four strings, because
+        // the question has two answers of the program's own naming and a message box's two buttons say OK and
+        // Cancel and cannot be made to say anything else; see Native.Ask.
+        ["AutoStartConflictTitle"] = ("Startup entry conflict", "启动项存在冲突"),
+        ["AutoStartConflict"] =
+            ("A start-up script with this name is already in shell:startup, but its contents are not what this " +
+             "program expects. Overwrite it?",
+             "shell:startup 中已存在同名启动脚本，但其内容与预期不符，是否覆盖？"),
+        ["AutoStartOverwrite"] = ("Overwrite (recommended)", "覆盖（推荐）"),
+        ["AutoStartCancel"]    = ("Cancel", "取消"),
         ["AdsMute"]      = ("Mute", "静音"),
         ["AdsUnmute"]    = ("Unmute", "取消静音"),
         // The countdown capsule is two labels and a separator: what is left, and what the button it is on does.

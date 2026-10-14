@@ -140,17 +140,43 @@ internal static class AutoStart
     /// quotes, and a layer that does not touch them is one less thing to be wrong about.
     /// </summary>
     private static string PsQuote(string value) => "'" + value.Replace("'", "''") + "'";
+    /// <summary>
+    /// What is in the Startup folder, judged against the hash of what this program wrote there.
+    ///
+    /// A hash rather than a reading of the text, and that is a change of kind rather than of detail. The text used
+    /// to be recognised by containing this program's path, which answers "would this start the program" and
+    /// nothing about whether it is still the file this program wrote: a launcher somebody edited - another
+    /// command, an argument added, a line appended - starts the program and is not the program's file, and the
+    /// menu went on claiming it. What the menu means by on is "what this program put there is still there", and
+    /// only the contents can answer that.
+    /// </summary>
+    public enum State
+    {
+        /// <summary>Nothing is there under that name.</summary>
+        Nothing,
+
+        /// <summary>There, with the contents this program recorded: the launcher is untouched.</summary>
+        Ours,
+
+        /// <summary>
+        /// There, and not the contents this program recorded - or nothing was recorded.
+        ///
+        /// One state rather than three, because a file somebody else wrote, a file that has been edited, and a
+        /// file whose record is gone (a deleted ini, a machine whose settings were reset) cannot be told apart
+        /// from here and do not need to be: in all three the folder holds something this program did not put
+        /// there, so the menu must not claim it and writing over it is the user's call rather than the program's.
+        /// </summary>
+        Changed,
+    }
 
     /// <summary>
-    /// True only when the launcher is there and is the one this program would write.
+    /// What is in the Startup folder, given the hash of what this program last wrote there - "" when it has never
+    /// written one, which is the state of a machine that has just had its settings reset and is read as "not
+    /// ours" on purpose.
     ///
-    /// Something else's file under our name counts as absent, which is what makes the next enable write ours over
-    /// it: a false "absent" costs one redundant write, while a false "present" leaves the menu claiming a state
-    /// this program does not control.
-    ///
-    /// Called on every right click, and it is one file read.
+    /// Called on every right click, and it is one file read and one hash of a few hundred bytes.
     /// </summary>
-    public static bool IsEnabled() => IsEnabled(StartupFolder());
+    public static State Look(string recordedHash, out string why) => Look(StartupFolder(), recordedHash, out why);
 
     /// <summary>
     /// The same question about a folder somewhere else, which is how probe/autostart asks it: writing into the
@@ -158,27 +184,49 @@ internal static class AutoStart
     /// own and hands the path in. The folder is the only thing it can vary; the text is always this program,
     /// because that is what Compat.ExePath is.
     /// </summary>
-    internal static bool IsEnabled(string folder)
+    internal static State Look(string folder, string recordedHash, out string why)
     {
-        bool ours = What(folder, out string why);
-        Log.Write($"autostart: {why}");
-        return ours;
+        string path = Path.Combine(folder, ScriptName);
+        string now = Hash(path);
+
+        if (now.Length == 0)
+        {
+            why = $"nothing at {path}";
+            return State.Nothing;
+        }
+        if (recordedHash.Length == 0)
+        {
+            why = $"{path} is there but this program has no record of writing it, so it is not ours";
+            return State.Changed;
+        }
+        if (!string.Equals(now, recordedHash, StringComparison.OrdinalIgnoreCase))
+        {
+            why = $"{path} is there and its contents are not the ones this program wrote " +
+                  $"({now.Substring(0, 8)} now, {recordedHash.Substring(0, 8)} recorded), so it is not ours";
+            return State.Changed;
+        }
+
+        why = $"{path} is this program's launcher, unedited";
+        return State.Ours;
     }
 
     /// <summary>
-    /// Turns the start-up launcher on or off, then reports the state that actually holds afterwards.
+    /// Turns the start-up launcher on or off, then reports what actually holds afterwards.
     /// </summary>
     /// <param name="wanted">True to write the launcher, false to delete it.</param>
+    /// <param name="written">The hash of the file that ended up there, or "" when there is none: what the caller
+    /// records in the ini, and the only thing that lets the next look tell this file from an edited one.</param>
     /// <param name="error">Empty on success, otherwise something worth showing the user.</param>
     /// <returns>The state that holds after the attempt, which the caller should trust over
     /// <paramref name="wanted"/>.</returns>
-    public static bool Apply(bool wanted, out string error) => Apply(StartupFolder(), wanted, out error);
+    public static bool Apply(bool wanted, out string written, out string error)
+        => Apply(StartupFolder(), wanted, out written, out error);
 
     /// <summary>
     /// The same, about a folder somewhere else. Internal for probe/autostart, which must not write into the
     /// user's real Startup folder to find out whether this works.
     /// </summary>
-    internal static bool Apply(string folder, bool wanted, out string error)
+    internal static bool Apply(string folder, bool wanted, out string written, out string error)
     {
         error = "";
         string path = Path.Combine(folder, ScriptName);
@@ -203,58 +251,39 @@ internal static class AutoStart
             Log.Write($"autostart: wanted={wanted} at {path} threw {error}");
         }
 
-        // What is true, not what was asked for. The file is written synchronously, so one read is enough.
-        bool now = IsEnabled(folder);
-        Log.Write($"autostart: wanted={wanted} now={now} file={path}");
+        // What is true, not what was asked for: the file is hashed as it now is, and the hash is the answer. The
+        // caller stores it, so a write that quietly produced something else - a mapped folder, a filter driver,
+        // anything between here and the disk - is not recorded as the file this program expects.
+        written = Hash(path);
+        bool now = written.Length > 0;
+        Log.Write($"autostart: wanted={wanted} now={now} file={path} " +
+                  $"hash={(written.Length == 0 ? "-" : written.Substring(0, 8))}");
         if (now != wanted && error.Length == 0)
             error = $"The file at {path} did not end up in the state that was asked for.";
         return now;
     }
 
     /// <summary>
-    /// Whether the file is this program's launcher, and the sentence for the log that says how it was decided.
+    /// The SHA-256 of a file, lowercase hex, or "" when it is not there or cannot be read.
     ///
-    /// The text is recognised by containing the two things this program writes into it - its own path and the
-    /// elevation request - rather than by being parsed as a batch file. A parser would tell "this program" from
-    /// "this program named as somebody else's argument", which is not a case worth a parser for a file this
-    /// program writes itself; a file that mentions our path without being ours has to be deliberately made up,
-    /// and the worst it costs is that such a file is treated as ours and written over - which is what the switch
-    /// being clicked asks for anyway.
+    /// Recomputed every time rather than cached: the whole point of it is to notice a file that changed while
+    /// this program was not looking, and a cache is one more thing that would have to be told.
     /// </summary>
-    private static bool What(string folder, out string why)
-    {
-        string path = Path.Combine(folder, ScriptName);
-        string text = Read(path);
-        string exe = CmdEscape(Compat.ExePath);
-
-        if (text.Length == 0)
-        {
-            why = $"nothing at {path}";
-            return false;
-        }
-
-        if (Compat.ExePath.Length == 0 || text.IndexOf(exe, StringComparison.OrdinalIgnoreCase) < 0)
-        {
-            why = $"{path} does not start this program (it does not name \"{exe}\"), so it counts as absent";
-            return false;
-        }
-
-        why = $"{path} is this program";
-        return true;
-    }
-
-    /// <summary>The file's text, or an empty string when it is not there.</summary>
-    private static string Read(string path)
+    internal static string Hash(string path)
     {
         try
         {
-            return File.Exists(path) ? File.ReadAllText(path) : "";
+            if (!File.Exists(path)) return "";
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            using var stream = File.OpenRead(path);
+            byte[] digest = sha.ComputeHash(stream);
+            var hex = new StringBuilder(digest.Length * 2);
+            foreach (byte b in digest) hex.Append(b.ToString("x2"));
+            return hex.ToString();
         }
         catch (Exception ex)
         {
-            // A file that cannot be read and a file that is not there are different things, and the log is where
-            // the difference gets to matter: the first has a cause worth reading.
-            Log.Write($"autostart: {path} could not be read ({ex.GetType().Name}: {ex.Message})");
+            Log.Write($"autostart: {path} could not be hashed ({ex.GetType().Name}: {ex.Message})");
             return "";
         }
     }
