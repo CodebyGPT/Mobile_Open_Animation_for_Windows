@@ -12,21 +12,24 @@
 
 ### Features
 
-- **No injection, no API hooks**
+- **Zero injection, minimally invasive**
+- **Single file, compact**
 - **No installer, nothing written to the registry**
-- **Nothing to install on Windows 10 1903 or later**
+- **Uses the .NET Framework 4.8 runtime**
 - **Dynamic corner radius**
 - **Material 3 emphasized curves**
 - **Follows the Windows animation setting**
-- **Launch ad and logon ad** (put your own videos in the `Ads` folder in the configuration directory)
+- **Custom opening ad** (put your own videos in the `Ads` folder in the configuration directory)
 - **No telemetry, no network access**
 
 ### Limitations
 
 - **UWP / WinUI apps**
 - **Online games with anti-cheat, and some security software** (their windows do not accept a change of state from another program)
-- **Dialogs, popups and tool windows**
-- **Windows the user did not open themselves**
+- **Dialogs, owned popups and tool windows** (a window with an owner, one marked as a tool window, and the dialog class itself are refused before any animation)
+- **The return animation needs a place that is still there when the window closes** - a click on the desktop or on the taskbar. A window opened from the Start menu, from search, or with the keyboard is animated on the way in and on the way out, but has nowhere to return to, so it closes where it stands.
+- **Windows that open on their own** - animated as well, but from the middle of the window rather than from a point the user chose; a window started with the keyboard grows out of the control that had the focus.
+- **Administrator rights** - the program asks for them as it starts, and without them it cannot change another program's window at all.
 
 ### Building
 
@@ -69,21 +72,24 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 
 ### 特性
 
-- **免注入、不使用 API Hook**
+- **零注入、侵入性低**
+- **单文件、体积小**
 - **免安装、不写注册表**
-- **Win10 1903+ 无需安装额外依赖**
+- **使用 .NET 4.8 运行时**
 - **支持动态圆角**
 - **采用 Material 3 Emphasized 曲线**
 - **遵循 Windows 个性化设置**
-- **支持开屏广告和开机广告**（需要自行将视频素材放入配置目录中的 Ads 文件夹）
+- **支持自定义开屏广告**（需要自行将视频素材放入配置目录中的 Ads 文件夹）
 - **无遥测、无联网**
 
 ### 局限性
 
 - **UWP / WinUI 应用**
 - **带反作弊的在线游戏、部分安全软件**（这类程序的窗口不接受外部程序改变其状态）
-- **对话框、弹窗、工具窗口**
-- **不是通过用户点击弹出来的窗口**
+- **对话框、有属主的弹窗、工具窗口**（有属主的窗口、标记为工具窗口的窗口以及对话框类窗口，在进入动画之前就被拦掉）
+- **回退动画需要一个"窗口关闭时仍然在那儿"的落点**——即桌面或任务栏上的一次点击。从开始菜单、搜索打开或用键盘打开的窗口，开/关动画都有，但没有可回退的落点，因此在原地收起。
+- **自己弹出的窗口**——同样有动画，但从窗口自身中心展开；用键盘打开的窗口从当时拥有焦点的控件中心展开。
+- **需要管理员权限**——程序启动时会请求提权；没有它就无法改变其它程序的窗口。
 
 ### 如何编译
 
