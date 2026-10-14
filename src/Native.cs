@@ -1119,6 +1119,51 @@ internal static class Native
     internal static string Integrity() => IntegrityOf(GetCurrentProcess());
 
     /// <summary>
+    /// Whether this process is at an integrity level UIPI will let it act from - at least High, which is what an
+    /// elevated process has and what everything else on an ordinary machine is below.
+    ///
+    /// This, and not the elevation flag, is the question that matters, and the difference was measured on the
+    /// machine this was written for: the Task Scheduler started a copy of this program with a token whose
+    /// TokenElevation is **set** and whose integrity level is **Low**. WindowsPrincipal.IsInRole and
+    /// TokenElevation therefore *both* answered "elevated" about a copy that could not add a tray icon or hide a
+    /// single window - low is below the medium the shell and the applications run at, and UIPI is what compares
+    /// them. The integrity level is the fact, so the check is this.
+    ///
+    /// "At least High" rather than "High": System is above it, and a copy running as System can hide windows.
+    /// </summary>
+    internal static bool IntegrityIsHighEnough()
+    {
+        uint rid = IntegrityRid();
+        return rid >= 0x3000;   // 0x1000 low, 0x2000 medium, 0x3000 high, 0x4000 system
+    }
+
+    /// <summary>
+    /// The integrity SID's last part, shared by the two callers above. See IntegrityOf for what it means and why
+    /// the buffer is sized by asking first.
+    /// </summary>
+    private static uint IntegrityRid()
+    {
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out IntPtr token)) return 0;
+        try
+        {
+            GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out uint size);
+            if (size < 8 || size > 4096) return 0;
+            IntPtr buffer = Marshal.AllocHGlobal((int)size);
+            try
+            {
+                if (!GetTokenInformation(token, TokenIntegrityLevel, buffer, size, out _)) return 0;
+                IntPtr sid = Marshal.ReadIntPtr(buffer);           // TOKEN_MANDATORY_LABEL.Label.Sid
+                if (sid == IntPtr.Zero) return 0;
+                int parts = Marshal.ReadByte(sid, 1);              // revision, count, authority, then the parts
+                if (parts < 1) return 0;
+                return (uint)Marshal.ReadInt32(sid, 8 + (parts - 1) * 4);
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        finally { CloseHandle(token); }
+    }
+
+    /// <summary>
     /// Whether this process is running with the elevated token, asked of the token itself.
     ///
     /// Not a role check, and the difference was measured rather than argued. A copy Windows started at logon

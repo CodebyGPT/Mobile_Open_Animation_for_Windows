@@ -266,8 +266,8 @@ internal sealed class Settings
         sb.AppendLine("; Mobile Open Animation for Windows - window open animation, standalone");
         sb.AppendLine("; The tray menu edits the entries marked [menu]; edit the rest here.");
         sb.AppendLine("; NOTE: Start with Windows is deliberately NOT stored in this file. The state is");
-        sb.AppendLine("; whether the scheduled task exists and is the one this program writes, read from the");
-        sb.AppendLine("; Task Scheduler itself, and a copy here could only ever disagree with it.");
+        sb.AppendLine("; whether this program's start-up launcher is in your own Startup folder and names this");
+        sb.AppendLine("; program, read from that folder, and a copy here could only ever disagree with it.");
         sb.AppendLine();
         sb.AppendLine("[general]");
         // This line is the whole reason settings survive a restart: Load regenerates the file from
@@ -478,16 +478,18 @@ internal static class Strings
         ["DebugMode"]    = ("Debug mode", "调试模式"),
         ["DebugEnable"]  = ("Enable", "启用"),
         ["DebugBootAd"]  = ("Play the logon ad now", "立即播放开机全屏广告"),
-        // Where the setting actually lives, said in the message that reports it failing: a scheduled task named
-        // after the program, which a user who is told that can look at - and switch off, or delete - in Task
-        // Scheduler. The Task Scheduler is named rather than the task's exact name being repeated, because the
-        // name is in AutoStart and the two would be a second thing to keep in step.
+        // Where the setting actually lives, said in the message that reports it failing: one file in the user's
+        // own Startup folder, which a user who is told that can look at - and delete - there, in Windows'
+        // Start-up settings page, or in Task Manager's Start-up tab. "Startup folder" is named rather than the
+        // file's exact path being repeated, because the path is in AutoStart and the two would be a second thing
+        // to keep in step.
         ["AutoStartFailed"] =
             ("Could not change the Start with Windows setting, so it has been left as it was.\n\n" +
-             "It is a scheduled task with the program's own name: open Task Scheduler to see it, or to " +
-             "delete it by hand.",
+             "It is a script in your own Startup folder, named after the program: it can be seen and deleted " +
+             "there, or switched off in Windows' Start-up settings.",
              "无法修改开机自启设置，已保持原状。\n\n" +
-             "它是以本程序命名的计划任务：打开「任务计划程序」即可看到，也可以在那里手动删除。"),
+             "它是放在你自己「启动」文件夹里、以本程序命名的一个脚本：可以在那里看到并删除，" +
+             "也可以在 Windows 的「启动应用」设置里关闭。"),
         // There is deliberately no string for "this must run as an administrator". A copy that is not elevated
         // leaves without a word - see Program.Run - so there is nothing left for a string to say, and the one
         // that was here is what made a launch Windows makes at logon sit there invisibly waiting to be
