@@ -1,6 +1,7 @@
 // Settings live in an .ini next to the exe. There is deliberately no settings window:
 // the tray menu handles toggles and enums, and this file handles the lists that a menu
 // cannot reasonably edit (excluded apps and window classes).
+using System.Globalization;
 using System.Text;
 
 namespace Moa;
@@ -101,6 +102,20 @@ internal sealed class Settings
     public int HandoffFadeMs = 160;   // panel fade-out once the app is ready
     public int ReadyTimeoutMs = 2400; // give up waiting for the app to paint
     public int MaxHideMs = 20000;     // absolute cap: never keep a window hidden longer
+
+    // ---- the advertisement's own rule ---------------------------------------------------
+    //
+    // When a program that has already shown an advertisement may show another one. The three parts are what
+    // AdRule.Chance is given, and the rule they make with the defaults is: after an advertisement the chance is
+    // nought, and every minute it grows by one percent - so a program that has been opened again and again for
+    // an hour has a chance of about sixty percent on each window, and one that has just been opened has none.
+    // A program that has never had one always gets it; the rule is about the *next* advertisement.
+    //
+    // The two numbers were typed into a window and are written here; the name is what AdRule.Name makes of the
+    // unit, so a hand-edited ini with a word that is not a unit falls back to the default rather than failing.
+    public string AdRuleUnit = AdRule.Name(AdRule.DefaultUnit);
+    public double AdRuleIncrease = AdRule.DefaultIncrease;
+    public double AdRuleReset = AdRule.DefaultReset;
 
     // ---- lists ------------------------------------------------------------------------
     public readonly List<string> ExcludedClasses = new();
@@ -236,6 +251,12 @@ internal sealed class Settings
                 case "handofffade": s.HandoffFadeMs = Clamp(Int(val, s.HandoffFadeMs), 0, 1000); break;
                 case "readytimeout": s.ReadyTimeoutMs = Clamp(Int(val, s.ReadyTimeoutMs), 500, 20000); break;
                 case "maxhidems": s.MaxHideMs = Clamp(Int(val, s.MaxHideMs), 500, 60000); break;
+                // The rule's three parts, as the window wrote them. The unit is kept as the word it is and
+                // checked where it is used, so that a hand-edited ini with something else in it behaves like an
+                // ini with no rule at all rather than like a broken one; see AdRule.TryParse.
+                case "adruleunit": s.AdRuleUnit = val.Trim().ToLowerInvariant(); break;
+                case "adruleincrease": s.AdRuleIncrease = Bound(Number(val, s.AdRuleIncrease), 0, 99.99); break;
+                case "adrulereset": s.AdRuleReset = Bound(Number(val, s.AdRuleReset), 0, 100); break;
                 case "excludeclasses": s.ExcludedClasses.Clear(); AddList(s.ExcludedClasses, val); break;
                 case "excludeprocesses": s.ExcludedProcesses.Clear(); AddList(s.ExcludedProcesses, val); break;
                 case "excludeorder": s.ExcludeOrder.Clear(); AddList(s.ExcludeOrder, val); break;
@@ -289,6 +310,15 @@ internal sealed class Settings
         sb.AppendLine("; whether advertisements play silently. On by default, and written by the mute control");
         sb.AppendLine("; on the card, which remembers between showings.");
         sb.AppendLine($"AdsMuted={(AdsMuted ? 1 : 0)}");
+        sb.AppendLine("; [menu] the rule for a program that has already shown an advertisement: the chance of");
+        sb.AppendLine("; another one starts at AdRuleReset when an advertisement plays and grows by");
+        sb.AppendLine("; AdRuleIncrease every AdRuleUnit. The three defaults are nought, one percent and one");
+        sb.AppendLine("; minute - so a program has no chance at the moment of its advertisement and gains one");
+        sb.AppendLine("; percent a minute after it. Both numbers are what that window writes; a program that");
+        sb.AppendLine("; has never had an advertisement always gets one, and the rule is not consulted.");
+        sb.AppendLine($"AdRuleUnit={AdRuleUnit}");
+        sb.AppendLine($"AdRuleIncrease={AdRuleIncrease.ToString("0.##", CultureInfo.InvariantCulture)}");
+        sb.AppendLine($"AdRuleReset={AdRuleReset.ToString("0.##", CultureInfo.InvariantCulture)}");
         sb.AppendLine("; not a setting: the SHA-256 of the start-up launcher this program wrote into your own");
         sb.AppendLine("; Startup folder. Empty means it has never written one, which reads as Start with");
         sb.AppendLine("; Windows being off. Deleting this line is the same as deleting the launcher: the menu");
@@ -361,6 +391,8 @@ internal sealed class Settings
                   $" dynamicCorner={OnOff(DynamicCorner)} returnToOrigin={OnOff(ReturnToOrigin)}" +
                   $" adsWindow={OnOff(WindowAd)}" +
                   $" startupHash={(StartupHash.Length == 0 ? "none" : StartupHash.Substring(0, 8))}" +
+                  $" adRule=+{AdRuleIncrease.ToString("0.##", CultureInfo.InvariantCulture)}%" +
+                  $"/{AdRuleUnit}/reset {AdRuleReset.ToString("0.##", CultureInfo.InvariantCulture)}%" +
                   $" debug={OnOff(DebugMode)} excluded={ExcludedClasses.Count} classes," +
                   $" {ExcludedProcesses.Count} processes");
     }
@@ -380,6 +412,15 @@ internal sealed class Settings
     private static long Long(string v, long d) => long.TryParse(v, out var i) ? i : d;
 
     private static int Clamp(int v, int lo, int hi) => v < lo ? lo : v > hi ? hi : v;
+
+    /// <summary>
+    /// A decimal out of the file, read with the invariant culture because that is how Save writes it and a
+    /// machine whose decimal separator is a comma must not read its own settings as nonsense.
+    /// </summary>
+    private static double Number(string v, double d)
+        => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) ? n : d;
+
+    private static double Bound(double v, double lo, double hi) => v < lo ? lo : v > hi ? hi : v;
 
     // Straight from the Windhawk mod; independent of this project's settings.
     public static readonly string[] DefaultExcludedClasses =
@@ -447,6 +488,21 @@ internal static class Strings
                               "回退动画（实验性）"),
         // The one advertisement entry, on the tray menu beside the animation switches and visible like them.
         ["AdsWindow"]    = ("Opening ad", "开屏广告"),
+        // The rule window's menu entry, and the window's own title: the same words in both places, because the
+        // menu is where the user asked for it and a window with a different name is a second thing to read.
+        ["AdRule"]       = ("Custom ad re-trigger rule", "自定义广告重新触发规则"),
+        // That window, in two lines, and the controls sit inside them: "Every [minute] add [01.00]% chance to
+        // re-trigger the ad" and "After an ad plays, reset the chance to [000]%". The fragments are separate
+        // strings because the controls are between them.
+        ["AdRuleEvery"]  = ("Every", "每"),
+        ["AdRuleAdd"]    = ("add", "增加"),
+        ["AdRuleChance"] = ("% chance to re-trigger the ad", "%概率重新触发广告"),
+        ["AdRuleAfter"]  = ("After an ad plays, reset the chance to", "触发广告后将概率重置为"),
+        ["AdRuleUnitSecond"] = ("second", "每秒"),
+        ["AdRuleUnitMinute"] = ("minute", "每分钟"),
+        ["AdRuleUnitHour"]   = ("hour", "每小时"),
+        ["AdRuleUnitDay"]    = ("day", "每天"),
+        ["AdRuleReset"]  = ("Reset", "重置"),
         // What the user is told when switching it on finds nothing to play: a question, and its own title, and
         // the title is what the window says rather than the program's name - the program's name over a question
         // about a folder is the same non-answer as an error box titled "Error". The body says the two things

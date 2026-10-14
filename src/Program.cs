@@ -21,7 +21,7 @@ internal static class Program
     internal const int MenuLangEn = 1, MenuLangZh = 2, MenuAutoStart = 3,
                        MenuConfig = 4, MenuAbout = 5, MenuExit = 6, MenuCloseAnim = 7,
                        MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10, MenuBlacklist = 11,
-                       MenuSplashAd = 13;
+                       MenuSplashAd = 13, MenuAdRule = 14;
 
     private static Settings _s = null!;
     internal static Settings S => _s;
@@ -346,11 +346,7 @@ internal static class Program
         if (!_s.WindowAd) return IntPtr.Zero;
 
         string program = ProgramName(pid);
-        if (_adsShown.Contains(program))
-        {
-            Log.Write($"ads: {program} has already had its advertisement; none for hwnd={hwnd}");
-            return IntPtr.Zero;
-        }
+        if (!AdMayPlayAgain(program)) return IntPtr.Zero;
 
         string[] videos = Ads.Videos();
         if (videos.Length == 0) return IntPtr.Zero;
@@ -367,13 +363,10 @@ internal static class Program
         // band the card ends up in. Said here rather than at the handoff because this is the program's own
         // decision about its own feature; the animator only needs to be told not to put the window back yet.
         //
-        // The hold is what keeps the guard's watchdog from giving the window back mid-advertisement: the
-        // watchdog's deadline is twenty seconds and the cap is six minutes, so without it a long advertisement
-        // would be sitting over a window that had quietly come back.
         // The hold the advertisement takes, and it is renewed by the animator's tick for as long as the
-        // advertisement is up - see Animator.KeepHeldWindowHidden and HideGuard.HoldRenewMs. Taken once for
-        // the advertisement's whole length, which is what this used to be, it is six minutes in which a card
-        // that died without releasing leaves a transparent window behind it.
+        // advertisement is up - see Animator.KeepHeldWindowHidden and HideGuard.HoldRenewMs. Taken once for the
+        // advertisement's whole length, which is what this used to be, it is six minutes in which a card that
+        // died without releasing leaves a transparent window behind it.
         _anim.KeepHidden = hwnd;
         _anim.HeldWindow = hwnd;
         _guard.Hold(hwnd, HideGuard.HoldRenewMs);
@@ -389,7 +382,10 @@ internal static class Program
             _guard.Release(hwnd);
         };
 
-        _adsShown.Add(program);
+        // Written down the moment the advertisement is played rather than when it ends, because this is the
+        // moment the rule counts from: "after an advertisement plays the chance is reset" is about having shown
+        // one, and an advertisement the user dismissed at once still counts as having been shown.
+        _adLastShown[program] = DateTime.UtcNow;
         Log.Write($"ads: window advertisement for {program} (pid {pid}) hwnd={hwnd} at " +
                   $"{rect.Left},{rect.Top} {rect.Right - rect.Left}x{rect.Bottom - rect.Top}," +
                   $" muted={muted} radius={radius}");
@@ -397,17 +393,48 @@ internal static class Program
     }
 
     /// <summary>
-    /// The programs that have had their one advertisement. A name rather than a process id, because it is the
-    /// program the rule is about, and a name that two processes of one program agree on: ProductName is the
-    /// field Windows keeps for exactly this and PowerToys' own two executables both call themselves PowerToys,
-    /// which is the case this went wrong on. Programs that leave it blank - many do - fall back to the path of
-    /// the executable, which is the same answer for them as long as they do not ship two of them.
+    /// Whether this program may have another advertisement now.
+    ///
+    /// A program that has never had one always may: the rule is about re-triggering, and a first advertisement
+    /// that could be rolled away would be a feature half the users never see. After that, how long ago it was
+    /// and the rule in the settings decide - see AdRule, where the arithmetic is, and probe/adrule, which puts
+    /// it through every case. Nothing is remembered beyond this run: the map is in memory, so every start gives
+    /// every program its first advertisement again.
+    /// </summary>
+    private static bool AdMayPlayAgain(string program)
+    {
+        if (!_adLastShown.TryGetValue(program, out var last)) return true;
+
+        AdRule.TryParse(_s.AdRuleUnit, out var unit);
+        // Wall clock rather than a tick count, which is what makes the "no chance at all" end of the rule
+        // reachable: a system clock moved backwards is a negative elapsed time, and the rule refuses it.
+        double elapsedMs = (DateTime.UtcNow - last).TotalMilliseconds;
+        double chance = AdRule.Chance(unit, _s.AdRuleIncrease, _s.AdRuleReset, elapsedMs);
+        bool yes = AdRule.SaysYes(chance, _roll.NextDouble());
+
+        Log.Write($"ads: {program} last had an advertisement at {last:HH:mm:ss}, " +
+                  $"{elapsedMs / 1000.0:F1}s ago; the chance is now {chance:F2}%, so " +
+                  (yes ? "it plays another" : "none this time"));
+        return yes;
+    }
+
+    /// <summary>
+    /// When each program last had an advertisement, which is what the rule counts from.
+    ///
+    /// A name rather than a process id, because it is the program the rule is about, and a name that two
+    /// processes of one program agree on: ProductName is the field Windows keeps for exactly this and PowerToys'
+    /// own two executables both call themselves PowerToys, which is the case this went wrong on. Programs that
+    /// leave it blank - many do - fall back to the path of the executable, which is the same answer for them as
+    /// long as they do not ship two of them.
     ///
     /// In memory and deliberately not in the file: the feature is meant to start again from nothing when the
-    /// program restarts, and a record that outlived the run would be a record of everything the user has ever
-    /// opened.
+    /// program restarts, so every run gives every program its first advertisement again, and a record that
+    /// outlived the run would be a record of everything the user has ever opened.
     /// </summary>
-    private static readonly HashSet<string> _adsShown = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, DateTime> _adLastShown = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The one roll of the dice per advertisement decision. See AdRule.SaysYes.</summary>
+    private static readonly Random _roll = new();
 
     /// <summary>Who each process turned out to be. Asked once per process, not once per window it opens.</summary>
     private static readonly Dictionary<uint, string> _programOf = new();
@@ -598,6 +625,7 @@ internal static class Program
         MenuDynCorner => "Dynamic corner radius",
         MenuReturnOrigin => "Return animation",
         MenuSplashAd => "Opening ad",
+        MenuAdRule => "Custom ad re-trigger rule",
         MenuDebugEnable => "Debug mode",
         MenuBlacklist => "Blacklist",
         _ => $"unknown ({id})",
@@ -744,6 +772,12 @@ internal static class Program
                 // brings the one that is there to the front. What closes it is its own X, or this program
                 // going away - the panel is owned by the tray host's window, so the system does the rest.
                 BlacklistPanel.Show();
+                break;
+            case MenuAdRule:
+                // The same shape, and for the same reason: two lines of settings that save themselves as they
+                // are changed, so there is nothing to be modal about and no Save button to press. See
+                // AdRuleDialog.
+                AdRuleDialog.Show();
                 break;
             case MenuExit:
                 _guard.ReleaseAll();
@@ -932,8 +966,12 @@ internal sealed class TrayHost
             // from one control to the next, the arrows and the page keys inside a list, Enter on the button
             // that has the focus, Esc - has to be applied by whoever is pumping the queue. It used to be the
             // panel's own loop; the panel has none now, so it is this one, and for every message that is not
-            // the panel's the call answers false and nothing changes.
-            if (!BlacklistPanel.IsDialogMessage(ref msg))
+            // the window's the call answers false and nothing changes.
+            //
+            // The advertisement's rule window is the same kind of thing and joins the same queue, for the same
+            // reason: it has a drop-down, two fields and a button, and Tab between them is not something a
+            // window without a dialog procedure gets on its own.
+            if (!BlacklistPanel.IsDialogMessage(ref msg) && !AdRuleDialog.IsDialogMessage(ref msg))
             {
                 Native.TranslateMessage(ref msg);
                 Native.DispatchMessageW(ref msg);
@@ -1058,6 +1096,7 @@ internal sealed class TrayHost
                     // instead: this is the program going away, and the panel goes with it while the message loop
                     // is still running rather than being taken down by the kernel with everything else.
                     BlacklistPanel.DestroyWithHost();
+                    AdRuleDialog.DestroyWithHost();
                     Native.PostQuitMessage(0);
                     return IntPtr.Zero;
             }
@@ -1141,6 +1180,13 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING |
             (Program.AutoStartOn ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuAutoStart, Strings.T("AutoStart"));
+
+        // Under the start-up switch, and only while the opening advertisement is on: this entry is the rule for
+        // when a program that has already shown an advertisement may show another, and with the advertisement
+        // switched off there is nothing for it to be a rule about. Rebuilt with the menu on every right click,
+        // so it comes and goes with the switch rather than needing to be told about it.
+        if (Program.S.WindowAd)
+            Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuAdRule, Strings.T("AdRule"));
 
         // A submenu rather than one more toggle among the animation ones, because what belongs under it is
         // any number of separate diagnostics and none of them is a setting in the sense the others are: an

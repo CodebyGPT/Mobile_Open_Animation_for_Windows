@@ -113,6 +113,28 @@ internal static class Native
     /// <summary>Asked, before a size change, for the smallest and largest the window may be.</summary>
     public const uint WM_GETMINMAXINFO = 0x0024;
     public const int SIZE_MINIMIZED = 1;
+
+    // ---- the stock controls the advertisement's rule window is made of -------------------------------------
+    //
+    // Its two fields are EDITs that are only allowed to hold a number, and the drop-down is a COMBOBOX. The
+    // mask is not here: it is a function over text in AdRule, because this program has no WinForms and a
+    // WinForms mask is the only place a mask is made of anything but text.
+
+    /// <summary>A single-line edit that scrolls sideways rather than refusing a long line.</summary>
+    public const uint ES_AUTOHSCROLL = 0x0080;
+
+    /// <summary>Digits only, which is the whole of what the reset field's mask needs from the control.</summary>
+    public const uint ES_NUMBER = 0x2000;
+
+    /// <summary>The text is chosen from the list and cannot be typed in, which is what a unit is.</summary>
+    public const uint CBS_DROPDOWNLIST = 0x0003;
+
+    public const uint CB_ADDSTRING = 0x0143;
+    public const uint CB_SETCURSEL = 0x014E;
+    public const uint CB_GETCURSEL = 0x0147;
+
+    /// <summary>Puts the selection - and so the caret - at a position in an edit. -1 is the end of the text.</summary>
+    public const uint EM_SETSEL = 0x00B1;
     /// <summary>Posted by the animation thread to ask the message loop for one animation frame.</summary>
     public const uint WM_APP_TICK = 0x8000 + 1;
 
