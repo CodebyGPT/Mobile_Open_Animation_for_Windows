@@ -19,17 +19,16 @@
 - **Dynamic corner radius**
 - **Material 3 emphasized curves**
 - **Follows the Windows animation setting**
-- **Custom opening ad** (put your own videos in the `Ads` folder in the configuration directory)
+- **Custom opening ad**
 - **No telemetry, no network access**
 
 ### Limitations
 
-- **UWP / WinUI apps**
-- **Online games with anti-cheat, and some security software** (their windows do not accept a change of state from another program)
-- **Dialogs, owned popups and tool windows** (a window with an owner, one marked as a tool window, and the dialog class itself are refused before any animation)
-- **The return animation needs a place that is still there when the window closes** - a click on the desktop or on the taskbar. A window opened from the Start menu, from search, or with the keyboard is animated on the way in and on the way out, but has nowhere to return to, so it closes where it stands.
-- **Windows that open on their own** - animated as well, but from the middle of the window rather than from a point the user chose; a window started with the keyboard grows out of the control that had the focus.
-- **Administrator rights** - the program asks for them as it starts, and without them it cannot change another program's window at all.
+- **UWP / WinUI apps** - the window is drawn by the framework itself, so there is nothing to take over.
+- **Online games with anti-cheat, and some security software** - their windows do not accept a change of state from another program.
+- **Dialogs, popups and tool windows** - a window with an owner, one the system marks as a tool window, a dialog, and the splash or helper windows that are too small when they are created, are all left alone.
+- **Apps that quit as they close** - opening animation only. The window is gone before its position and size can be read, so there is nothing to shrink back from.
+- **The same app sometimes animates and sometimes does not** - the program has to take the window over before it appears. When it loses that race the window is left alone rather than drawn over, so that launch has no animation.
 
 ### Building
 
@@ -79,17 +78,16 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 - **支持动态圆角**
 - **采用 Material 3 Emphasized 曲线**
 - **遵循 Windows 个性化设置**
-- **支持自定义开屏广告**（需要自行将视频素材放入配置目录中的 Ads 文件夹）
-- **无遥测、无联网**
+- **支持自定义开屏广告**
+- **无遥测、不联网**
 
 ### 局限性
 
-- **UWP / WinUI 应用**
-- **带反作弊的在线游戏、部分安全软件**（这类程序的窗口不接受外部程序改变其状态）
-- **对话框、有属主的弹窗、工具窗口**（有属主的窗口、标记为工具窗口的窗口以及对话框类窗口，在进入动画之前就被拦掉）
-- **回退动画需要一个"窗口关闭时仍然在那儿"的落点**——即桌面或任务栏上的一次点击。从开始菜单、搜索打开或用键盘打开的窗口，开/关动画都有，但没有可回退的落点，因此在原地收起。
-- **自己弹出的窗口**——同样有动画，但从窗口自身中心展开；用键盘打开的窗口从当时拥有焦点的控件中心展开。
-- **需要管理员权限**——程序启动时会请求提权；没有它就无法改变其它程序的窗口。
+- **UWP / WinUI 应用** —— 窗口由框架自己绘制，接管不了。
+- **带反作弊的在线游戏、部分安全软件** —— 这类程序的窗口不接受外部程序改变其状态。
+- **对话框、弹窗、工具窗口** —— 有属主的窗口、系统标记为工具窗口的窗口、对话框，以及创建时太小的启动画面和助手窗口，都不显示动画。
+- **关闭窗口的同时就退出程序的** —— 只有开屏动画，没有关闭动画：窗口消失得太快，来不及读到它的位置和尺寸，也就没有可收缩的对象。
+- **同一个应用有时有动画、有时没有** —— 程序要抢在窗口显示出来之前接管它；没抢到时就直接放过，不在用户已经看到的窗口上做动画，这一次就没有动画。
 
 ### 如何编译
 
