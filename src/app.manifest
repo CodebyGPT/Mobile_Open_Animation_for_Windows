@@ -23,15 +23,17 @@
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" /><!-- Win 10 / 11 -->
     </application>
   </compatibility>
-  <!-- requireAdministrator, deliberately. UIPI lets us touch only windows at our own or a lower
-       integrity level, so unelevated this program would not animate most modern applications at
-       all: it would look broken rather than limited. Windows therefore elevates before the
-       process starts, and declining the prompt means it does not start. Program.Run checks this
-       again as a belt to that braces, and the task registered at logon runs with highest
-       privileges so that the elevation costs no prompt. -->
+  <!-- asInvoker, deliberately, and it is the opposite of what this file used to ask for. UIPI lets the
+       program touch only windows at its own integrity level or below, so it does need to be elevated - but
+       asking Windows to elevate *before the process starts* means there is no process to do anything
+       unelevated, and the one thing worth doing unelevated is the logon advertisement: that card is the
+       program's own window and needs no rights at all, so it can play before the consent prompt instead of
+       after it. Program.Run therefore starts unelevated, plays the advertisement if this is a logon start,
+       and then asks for elevation itself through the RunAs verb - leaving if the user declines. See
+       Program.SelfElevate. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security><requestedPrivileges>
-      <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      <requestedExecutionLevel level="asInvoker" uiAccess="false" />
     </requestedPrivileges></security>
   </trustInfo>
 </assembly>

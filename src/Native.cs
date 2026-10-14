@@ -1194,6 +1194,52 @@ internal static class Native
         finally { CloseHandle(token); }
     }
 
+    /// <summary>
+    /// Starts a program elevated, through the shell's "runas" verb, which is the same request as the user
+    /// choosing "run as administrator" - so Windows shows one consent prompt and this returns whether the user
+    /// agreed. False means the request was refused: ERROR_CANCELLED (1223) when the user said no, something else
+    /// when the account cannot elevate at all.
+    ///
+    /// The shell does the work rather than a custom launch: the consent machinery is only reachable through it,
+    /// and manufacturing an elevated token is not a thing a program gets to do.
+    /// </summary>
+    internal static bool StartElevated(string file, string arguments, string directory)
+    {
+        var info = new SHELLEXECUTEINFOW
+        {
+            CbSize = Marshal.SizeOf<SHELLEXECUTEINFOW>(),
+            LpVerb = "runas",
+            LpFile = file,
+            LpParameters = arguments,
+            LpDirectory = directory,
+            NShow = 1,          // SW_SHOWNORMAL: a windowed program, and its own windows decide the rest
+        };
+        return ShellExecuteExW(ref info);
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHELLEXECUTEINFOW
+    {
+        public int CbSize;
+        public uint FMask;
+        public IntPtr Hwnd;
+        public string? LpVerb;
+        public string? LpFile;
+        public string? LpParameters;
+        public string? LpDirectory;
+        public int NShow;
+        public IntPtr HInstApp;
+        public IntPtr LpIDList;
+        public string? LpClass;
+        public IntPtr HkeyClass;
+        public uint DwHotKey;
+        public IntPtr HIcon;
+        public IntPtr HProcess;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ShellExecuteExW(ref SHELLEXECUTEINFOW info);
+
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);

@@ -9,14 +9,13 @@
 //     Mobile Open Animation for Windows.cmd
 //
 //     @echo off
-//     start "" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden
-//       -Command "Start-Process -FilePath '<exe>' -ArgumentList '--logon' -Verb RunAs"
+//     start "" "<exe>" --logon
 //     exit
 //
-// Explorer starts whatever is in that folder at logon. The batch file needs no rights of its own to be started
-// and asks for none - it is a text file - and *it* is what asks Windows for elevation, through a hidden
-// PowerShell and the RunAs verb. So the thing that appears at logon is one consent prompt, in plain sight, and
-// the user answers it. Declining starts nothing and leaves nothing running.
+// Explorer starts whatever is in that folder at logon, and this needs no rights of its own to be started: a text
+// file, executed by cmd.exe, naming an ordinary executable. The program it starts is the one that asks Windows
+// for elevation, and it does that after the logon advertisement - see Program.SelfElevate, and the asInvoker
+// manifest that lets it exist unelevated at all.
 //
 // Every other way of doing this was tried on the machine this was written for, and what each of them did is the
 // reason this is what is left:
@@ -26,24 +25,24 @@
 //     nothing the program can ask about the token refuses it, and UIPI then refuses the tray icon and every
 //     window. (Watt Toolkit registers a task with these same fields; it works for most people, and it does not
 //     work here.)
-//   * a Startup-folder shortcut, and a value under HKCU\Run naming the program directly, both need the *shell*
+//   * a Startup-folder shortcut, and a value under HKCU\Run naming the program directly, both needed the *shell*
 //     to raise the consent prompt for an elevation-requiring program - and both produced no logon start, no
 //     prompt and no trace at all.
-//   * a value under HKCU\Run holding this same hidden-PowerShell command, which needs no elevation itself and
-//     therefore cannot have been refused on that ground, produced no start and no prompt either. On that
-//     machine HKCU\Run is simply not processed (another program's value there does not start either), which is
-//     why this is a file in the Startup folder and not a value in the registry.
+//   * a value under HKCU\Run holding a hidden-PowerShell launcher, which needs no elevation itself and therefore
+//     cannot have been refused on that ground, produced no start and no prompt either. On that machine HKCU\Run
+//     is simply not processed (another program's value there does not start either), which is why this is a file
+//     in the Startup folder and not a value in the registry.
 //   * a .vbs would avoid the black window this batch file flashes, and it is out: VBScript is deprecated, an
 //     optional Windows feature now, with removal planned.
 //   * a .lnk would avoid it too and is the tidier answer, but writing one needs COM. If the flash ever becomes
-//     worth that, it is the change to make; the launcher would be a shortcut to the same hidden PowerShell.
+//     worth that, it is the change to make; the launcher would be a shortcut to this same executable.
 //
 // The mechanism is the prompt, not a way around it
 // ------------------------------------------------
 // This program cannot hide another process's window unless it holds rights UIPI will accept, so a copy that is
-// not elevated is useless - it can play a logon advertisement, because that window is its own, and do nothing
-// else. Asking is therefore the whole of the design: a start-up entry that needs no rights to be started, and
-// that asks for them in a way the user can see.
+// not elevated can do exactly one thing: play a logon advertisement, because that window is its own. Both halves
+// of that are the design - the advertisement first, then the question - and this file is the half that needs no
+// rights at all.
 //
 // The logon argument
 // ------------------
@@ -64,12 +63,11 @@
 //
 // The state, and what the menu shows
 // ----------------------------------
-// The file's own text. It is this program's when it names this executable, carries the logon argument and asks
-// for elevation; nothing there, or something else's file under our name, counts as off - and the next click
-// writes ours over it, because the click means "start this program at logon", which is what every other
-// program's Start with Windows means too. A launcher of ours missing either of those two parts counts as off as
-// well, and for a reason that is invisible otherwise: one would start a copy that plays no logon advertisement,
-// and the other a copy that cannot hide anything at all.
+// The file's own text. It is this program's when it names this executable and carries the logon argument;
+// nothing there, or something else's file under our name, counts as off - and the next click writes ours over
+// it, because the click means "start this program at logon", which is what every other program's Start with
+// Windows means too. A launcher of ours with the argument edited out counts as off as well: the copy it starts
+// plays no logon advertisement, and that difference is invisible otherwise.
 //
 // The rule the caller depends on
 // ------------------------------
@@ -96,21 +94,16 @@ internal static class AutoStart
     /// </summary>
     public const string LogonArgument = "--logon";
 
-    /// <summary>
-    /// The word in the launcher that asks Windows for elevation. It is checked for, because a launcher of ours
-    /// without it would start a copy that cannot hide anything - the failure this whole mechanism is arranged
-    /// around - and that difference is invisible from the outside.
-    /// </summary>
-    private const string Elevate = "RunAs";
-
     /// <summary>The folder Windows looks in for "start this when I log on", for this user.</summary>
     private static string StartupFolder() => Environment.GetFolderPath(Environment.SpecialFolder.Startup);
 
     /// <summary>
     /// The launcher, as it is written.
     ///
-    /// The two `rem` lines are not decoration: a file in a Startup folder that starts a program elevated is also
-    /// the shape of something hostile, so the first thing in it says what it is and how to stop it.
+    /// The `rem` lines are not decoration: a file in a Startup folder that starts a program is also the shape of
+    /// something a user did not put there, so the first thing in it says what it is and how to stop it. The third
+    /// one says who asks for the rights, because the answer is not this file: the program does, after it has
+    /// played the logon advertisement.
     /// </summary>
     internal static string ScriptText() => ScriptFor(Compat.ExePath);
 
@@ -121,17 +114,13 @@ internal static class AutoStart
     /// </summary>
     internal static string ScriptFor(string exePath)
     {
-        string command =
-            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command " +
-            "\"Start-Process -FilePath " + PsQuote(exePath) +
-            " -ArgumentList " + PsQuote(LogonArgument) +
-            " -WorkingDirectory " + PsQuote(Path.GetDirectoryName(exePath) ?? "") +
-            " -Verb " + Elevate + "\"";
+        string command = "\"" + exePath + "\" " + LogonArgument;
 
         return
             "@echo off\r\n" +
-            "rem Mobile Open Animation for Windows - starts the program at logon, as an administrator.\r\n" +
+            "rem Mobile Open Animation for Windows - starts the program at logon.\r\n" +
             "rem Written by the program's own tray menu. Delete this file to stop it starting at logon.\r\n" +
+            "rem The program asks Windows for administrator rights itself, after the logon advertisement.\r\n" +
             "start \"\" " + CmdEscape(command) + "\r\n" +
             "exit\r\n";
     }
@@ -267,14 +256,7 @@ internal static class AutoStart
             return false;
         }
 
-        if (text.IndexOf(Elevate, StringComparison.OrdinalIgnoreCase) < 0)
-        {
-            why = $"{path} starts this program but does not ask for elevation, so the copy it starts could not " +
-                  "hide anything; it is out of date and will be written again";
-            return false;
-        }
-
-        why = $"{path} is this program, started at logon as an administrator";
+        why = $"{path} is this program, started at logon";
         return true;
     }
 

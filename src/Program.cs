@@ -38,10 +38,33 @@ internal static class Program
 
     /// <summary>
     /// Whether this copy is the one the start-up launcher started, and therefore the only copy a logon
-    /// advertisement is played by. Read once from the command line at start-up; see AutoStart.LogonArgument
-    /// for why the argument is the only thing that can answer it.
+    /// advertisement is played by. Read once from the command line at start-up; see AutoStart.LogonArgument for
+    /// why the argument is the only thing that can answer it.
     /// </summary>
     internal static bool StartedAtLogon;
+
+    /// <summary>
+    /// The argument this program gives the copy of itself it starts elevated, and the marker that keeps the two
+    /// of them from doing the same work twice.
+    ///
+    /// A copy carrying it has already had its advertisement decided - by itself, before it asked - so it does not
+    /// play one, and it is past the point of asking for elevation, so it does not ask again. Without a marker
+    /// here the continuation would ask for elevation again and the two would take turns forever.
+    /// </summary>
+    internal const string ElevatedArgument = "--elevated";
+
+    /// <summary>
+    /// Whether this copy is the continuation of one that already asked for elevation. See
+    /// <see cref="ElevatedArgument" />.
+    /// </summary>
+    internal static bool StartedElevated;
+
+    private static bool Says(string[] args, string what)
+    {
+        foreach (string arg in args)
+            if (string.Equals(arg, what, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
     private static TrayHost _host = null!;
     private static Animator _anim = null!;
 
@@ -61,6 +84,31 @@ internal static class Program
     /// a copy that could not draw a tray icon or hide anything.
     /// </summary>
     internal static bool IsElevated() => Native.IntegrityIsHighEnough();
+
+    /// <summary>
+    /// Asks Windows for elevation, which is what this program means by rights: UIPI lets it touch only windows at
+    /// its own integrity level or below, so unelevated it would look broken rather than limited.
+    ///
+    /// The copy that asked does not wait for the answer - it leaves, and the continuation does the work. Two
+    /// processes exist for the moment in between, and neither invariant is at risk: the continuation is the one
+    /// marked with the argument that stops it asking again and playing the advertisement again, and the mutex
+    /// that makes an instance unique is taken only by a copy that is staying.
+    ///
+    /// False is the user saying no, or an account that cannot elevate at all; the caller leaves either way,
+    /// without a word, because the prompt was the question and there is nothing left to say about the answer.
+    /// </summary>
+    private static bool SelfElevate()
+    {
+        string arguments = ElevatedArgument +
+                           (StartedAtLogon ? " " + AutoStart.LogonArgument : "");
+        Log.Write($"not elevated: asking for elevation and offering the work to the copy that gets it ({arguments})");
+
+        bool started = Native.StartElevated(Compat.ExePath, arguments,
+                                            Path.GetDirectoryName(Compat.ExePath) ?? "");
+        if (!started)
+            Log.Write($"the request for elevation was refused (error {Marshal.GetLastWin32Error()})");
+        return started;
+    }
 
     /// <summary>
     /// The single-instance guard, held for the whole life of the process and never disposed - and that is
@@ -180,31 +228,66 @@ internal static class Program
         // icon is next to the clock, and being told "already running" by a second copy of something you
         // have just asked for is noise rather than information. The log keeps the evidence.
         //
-        // Placed before the elevation check rather than after: a copy that is already running is a better
-        // explanation for "nothing happened" than missing rights are, so it is the one worth answering
-        // first - and answering it with a warning box would send someone looking for a problem that is not
-        // there.
+        // This copy's own two markers, read before anything is decided: whether the start-up launcher started
+        // it, and whether it is the continuation of a copy that already asked for elevation. See
+        // AutoStart.LogonArgument and ElevatedArgument.
+        StartedAtLogon = AutoStart.SaysLogon(Environment.GetCommandLineArgs());
+        StartedElevated = Says(Environment.GetCommandLineArgs(), ElevatedArgument);
+        Log.Write($"started at logon: {StartedAtLogon}, already elevated and continuing: {StartedElevated} " +
+                  $"(this copy's command line is " +
+                  $"{string.Join(" ", Environment.GetCommandLineArgs().Skip(1))})");
+
+        // The first thing this program does about rights is ask for them, and the advertisement comes first
+        // because it is the one part of the program that does not need them: that card is this program's own
+        // window, so an unelevated copy can play it perfectly well - and if the user then says no to the
+        // consent prompt, at least the advertisement they asked for was seen.
+        //
+        // This copy is then finished. It holds no single-instance mutex, installs no hooks and draws no tray
+        // icon: nothing that has to be unique is done by a copy that is going to leave. That is what keeps the
+        // single-instance rule intact with two processes briefly alive.
+        if (!IsElevated() && !StartedElevated)
+        {
+            AutoStartOn = AutoStart.IsEnabled();
+            ShowBootAdIfDue();
+
+            // The card drives itself on the message queue, so it needs one until it is done. AdsCard.Showing is
+            // false when nothing was shown at all, which is the common case - a manual start, or the
+            // advertisement switched off - and then this is a no-op.
+            while (AdsCard.Showing)
+            {
+                if (Native.PeekMessageW(out var m, IntPtr.Zero, 0, 0, Native.PM_REMOVE))
+                {
+                    Native.TranslateMessage(ref m);
+                    Native.DispatchMessageW(ref m);
+                }
+                else
+                {
+                    System.Threading.Thread.Sleep(2);
+                }
+            }
+
+            if (!SelfElevate()) return 1;
+            return 0;
+        }
+
+        // Past the point where asking is possible: either this copy is elevated, or it is the continuation of one
+        // that asked and the answer was no. Nothing is shown for the second - the consent prompt was the
+        // question, and it has been answered - and the log says which of the two this was.
+        if (!IsElevated())
+        {
+            Log.Write("the request for elevation was refused, so this copy cannot hide other processes' windows; " +
+                      "it is leaving");
+            return 1;
+        }
+
+        // Placed after the elevation decision rather than before it, which is the opposite of what this used to
+        // do and for a reason that is now the whole design: the copy that asks for elevation must not be the
+        // copy that claims the session. Only the copy that is going to stay takes this, so there is exactly one
+        // of those no matter how many asked.
         if (!OnlyCopyInThisSession())
         {
             Log.Write("another copy is already running in this session; leaving it to do the work");
             return 0;
-        }
-
-        // Required, not optional. The manifest asks Windows to elevate before the process starts; this is the
-        // belt to that braces, and it is what a launch that bypassed the manifest gets instead of silently
-        // animating nothing.
-        //
-        // Nothing is asked and nothing is shown: a copy that is not elevated cannot do the one thing this
-        // program is - hiding other processes' windows is exactly what UIPI refuses - so there is nothing to
-        // decide and nobody to tell. The message box this used to put up was worse than useless, because the
-        // launch it matters for is the one Windows makes at logon: it appeared on a desktop nobody was looking
-        // at and the process sat there waiting to be answered, which is a program that is running with no tray
-        // icon and no animation and can only be killed from Task Manager. The line is written first, so that
-        // the next time this happens the log says which launch it was.
-        if (!IsElevated())
-        {
-            Log.Write("not elevated: this copy cannot hide other processes' windows, so it is leaving");
-            return 1;
         }
 
         // What the answer was, written down where it can be read afterwards: the question itself is asked once
@@ -248,13 +331,6 @@ internal static class Program
         // is logged either way, including what it was looking for when there is something under our name that is
         // not ours.
         AutoStartOn = AutoStart.IsEnabled();
-
-        // And whether this copy is the one the launcher started, which is the whole of what a logon advertisement
-        // is for. Nothing else distinguishes it; see AutoStart.LogonArgument.
-        StartedAtLogon = AutoStart.SaysLogon(Environment.GetCommandLineArgs());
-        Log.Write($"started at logon: {StartedAtLogon} " +
-                  $"(the launcher passes {AutoStart.LogonArgument}; this copy's command line is " +
-                  $"{string.Join(" ", Environment.GetCommandLineArgs().Skip(1))})");
 
         // Running means working, and exiting means not working: there is deliberately no paused
         // state, because a menu item that silently turns the program off is a support question.
@@ -434,7 +510,13 @@ internal static class Program
             Log.Write(opened ? $"ads: searching, {url}" + (why.Length == 0 ? "" : $" - {why}")
                              : $"ads: the search was not opened: {why}");
         };
-        AdsCard.FrameMs = (int)Math.Round(_anim.FrameMs);
+        // The card's redraw interval is the display's frame time, which the animator works out from the monitor's
+        // refresh rate. The copy that plays the logon advertisement before asking for elevation has no animator -
+        // it installs no hooks and watches nothing, because the advertisement is the only thing it is there for -
+        // so it uses the 60 Hz default. The video is drawn by the media engine into its own child window and does
+        // not depend on this at all; it is the countdown and the fade that follow it. (Running WireCard before
+        // that copy existed was a NullReferenceException at startup, which is how this line was found.)
+        AdsCard.FrameMs = _anim is null ? 16 : (int)Math.Round(_anim.FrameMs);
         AdsCard.Radius = radius;
     }
 
@@ -474,6 +556,16 @@ internal static class Program
             {
                 Log.Write("ads: this copy was not started at logon, so no logon advertisement" +
                           $" (the launcher passes {AutoStart.LogonArgument}, and this copy did not get it)");
+                return;
+            }
+
+            // And the copy that asked for elevation has already had its advertisement - it played it before it
+            // asked, so that declining the prompt would not also mean losing it. This is the marker that stops it
+            // being played twice, which matters more than it sounds: the advertisement is up to six minutes long.
+            if (StartedElevated)
+            {
+                Log.Write("ads: this copy is the continuation of one that already played the logon advertisement " +
+                          $"before asking for elevation ({ElevatedArgument})");
                 return;
             }
 
@@ -839,6 +931,7 @@ internal sealed class TrayHost
         _trayAdded = Native.Shell_NotifyIconW(Native.NIM_ADD, ref nid);
         Moa.Log.Write($"Shell_NotifyIcon(NIM_ADD) -> {_trayAdded} err={Marshal.GetLastWin32Error()} hwnd={_hwnd} icon={icon}");
     }
+
 
     /// <summary>
     /// Asks for the icon to be in the tray, and keeps asking for a while if the shell is not listening yet.
