@@ -56,10 +56,14 @@ internal sealed class Settings
     /// <summary>
     /// Dynamic rounding: whether the card's corner animates as the card grows or shrinks.
     ///
-    /// On, an opening card begins as a circle - the roundest shape a card of that size can hold - and squares
-    /// off into the window's own corner as it grows, while a closing card goes the other way and ends as a
-    /// circle. Off, the card keeps the corner the window itself has for the whole of its life: square on
-    /// Windows 10, eight pixels on Windows 11, so the shape never changes and only its size does.
+    /// On, an opening card begins as a rounded square - 22 per cent of its own side, the proportion the upstream
+    /// mod uses and the shape of the icon the card grows out of - and squares off into the window's own corner
+    /// as it grows, while a closing card goes the other way and ends at the same rounded square. Off, the card
+    /// keeps the corner the window itself has for the whole of its life: square on Windows 10, eight pixels on
+    /// Windows 11, so the shape never changes and only its size does.
+    ///
+    /// It was a circle at the start once, and that is a shape nothing in Windows has; see Animator for why it is
+    /// not any more.
     ///
     /// The default follows the shape the card settles into, which is what makes it differ by version: on for
     /// Windows 11, whose windows have an eight pixel round corner, so the card arrives at a shape that is
@@ -297,11 +301,12 @@ internal sealed class Settings
         sb.AppendLine("; must hold at least one video file; subfolders are not read.");
         sb.AppendLine($"AdsVisible={(AdsVisible ? 1 : 0)}");
         sb.AppendLine($"CloseAnimation={(CloseAnimation ? 1 : 0)}");
-        sb.AppendLine("; [menu] dynamic rounding. On, an opening card begins as a circle and squares off");
-        sb.AppendLine("; into the window's own corner as it grows, and a closing card ends as a circle. Off,");
-        sb.AppendLine("; the card keeps the window's own corner from start to finish and only its size");
-        sb.AppendLine("; changes. Defaults to on for Windows 11 and off for Windows 10, following the corner");
-        sb.AppendLine("; it settles into: 11 rounds its windows, 10 does not.");
+        sb.AppendLine("; [menu] dynamic rounding. On, an opening card begins as a rounded square, 22% of");
+        sb.AppendLine("; its own side, and squares off into the window's own corner as it grows, and a");
+        sb.AppendLine("; closing card ends at that same rounded square. Off, the card keeps the window's own");
+        sb.AppendLine("; corner from start to finish and only its size changes. Defaults to on for Windows 11");
+        sb.AppendLine("; and off for Windows 10, following the corner it settles into: 11 rounds its windows,");
+        sb.AppendLine("; 10 does not.");
         sb.AppendLine($"DynamicCorner={(DynamicCorner ? 1 : 0)}");
         sb.AppendLine("; [menu] closing animation: shrink back to the square the window was opened from,");
         sb.AppendLine("; instead of to its own centre. Off by default. Only for windows opened from the");

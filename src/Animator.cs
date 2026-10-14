@@ -240,6 +240,18 @@ internal sealed class Animator
     private const int MaxOrigins = 256;
 
     /// <summary>
+    /// How round the card is when it is the size of the start square, as a percentage of that square's side: the
+    /// proportion the Windhawk mod uses (mobile-open-animation.wh.cpp:2787), where the start rectangle is "a
+    /// square of edge size centred on the anchor, which is the icon itself".
+    ///
+    /// It is the one shape constant the two ends of a window's life have to agree on, which is why it is here
+    /// and not written twice: the opening animation starts at this radius and the closing animation ends at it,
+    /// so that a window closing is the opening run backwards. A disc - half the square, the roundest shape that
+    /// square can hold - was tried in place of this and taken back out; see OnWindowCreated.
+    /// </summary>
+    private const int StartRadiusPercent = 22;
+
+    /// <summary>
     /// How long the application's window may have been on screen before we hid it, in
     /// milliseconds, before we give up and play no animation for that window.
     ///
@@ -567,6 +579,22 @@ internal sealed class Animator
     /// </summary>
     internal static POINT CornerOf(POINT anchor, int size)
         => new POINT { X = anchor.X - size / 2, Y = anchor.Y - size / 2 };
+
+    /// <summary>
+    /// The corner a card of this size arrives at, and the one a closing card of that size ends at - the shape at
+    /// the small end of an animation, which is the end all of this is about.
+    ///
+    /// One function for both ends because they have to be the same number, or a window closing is not the opening
+    /// run backwards but a second thing that happens to be round; and they are worked out a hundred lines apart,
+    /// in OnWindowCreated and OnWindowClosed, which is the arrangement that lets two numbers drift. probe/panel
+    /// checks the proportion and the pass-through.
+    ///
+    /// <paramref name="windowRadius" /> is what the switch being off means, and it is the caller's because it is
+    /// the window's own corner rather than anything this file knows: eight pixels at 96 DPI on Windows 11,
+    /// nothing at all on Windows 10.
+    /// </summary>
+    internal static int CardRadius(int size, bool dynamic, int windowRadius)
+        => dynamic ? size * StartRadiusPercent / 100 : windowRadius;
 
     /// <summary>
     /// Asks the animation thread for the frame this moment's geometry calls for, and answers how far through
@@ -905,12 +933,11 @@ internal sealed class Animator
             }
         }
 
-        // Half of the square the card shrinks into, which is the roundest a square of that size can be and
-        // is exactly the limit the drawing clamps to: the closing card therefore ends as a disc that fades
-        // away, rather than as a rounded square. Taken as "half the shortest side" rather than a percentage
-        // of it because the point is to start from the roundest shape the card can hold; the reachable
-        // range, if this turns out to be too much, is from here down to the 22 per cent this used to be.
-        int endRadius = _s.DynamicCorner ? endSize / 2 : targetRadius;
+        // The radius the closing card ends at, which is the one the opening card started at: the same share of
+        // the same size, from the same constant, so that a window closing is the opening run backwards rather
+        // than merely another rounded square. See StartRadiusPercent, which is also where the disc that used to
+        // be here went and why.
+        int endRadius = CardRadius(endSize, _s.DynamicCorner, targetRadius);
         // The first frame is known right now - this rectangle, fully opaque - so it is handed over
         // with the panel instead of waiting for a tick and then a flush. That wait is about 16 ms,
         // one frame, and it is the seam between the window vanishing and the panel appearing.
@@ -1085,20 +1112,22 @@ internal sealed class Animator
         // start size changed with the DPI, and a centre does not move when the thing around it is resized. The
         // work of turning it into a corner is done in RequestGrowFrame, which is also the only thing that cares.
         int targetRadius = Native.IsWindows11 ? Native.MulDiv(8, dpi, 96) : 0;
-        // Half the start square, which is the roundest that square can be: at this size the card is a
-        // disc, and it squares off into the window's own corner as it grows. This used to be 22 per cent
-        // of the square - the proportion the Windhawk mod uses (mobile-open-animation.wh.cpp:2787) - and
-        // the reasoning for matching the mod was that the target radius is ours to choose but how round
-        // the card starts is a matter of how the animation looks. What that missed is the size of the
-        // card: 22 per cent of a 144 pixel square is 31 pixels, and by the time the card is two thousand
-        // pixels wide the same interpolation has it down to single figures, which reads as a sharp corner
-        // on a large window. Starting from the roundest shape the card can hold keeps the corner round
-        // through the visible part of the growth; the reachable range if this is too much is from here
-        // down to that 22 per cent.
+        // Where the card starts from in shape, and the mod's proportion rather than a disc: 22 per cent of the
+        // side of the square it begins as.
+        //
+        // Half the square - the roundest shape that square can hold, so the card arrives as a circle and squares
+        // off as it grows - was tried here and taken back out. Two things were wrong with it. A circle is not a
+        // shape anything in Windows has, so the first frames of every animation were a shape the user has never
+        // seen in this system, and the mod itself never had one: its start rectangle is centred on the icon, and
+        // what grows is meant to be the icon. And the whole of the difference is visible only while the card is
+        // small, because the radius it is interpolating *to* is the window's own - eight pixels at 96 DPI on
+        // Windows 11, nothing at all on Windows 10 - so the shape spends most of the animation already near the
+        // corner it will end on, and what the circle bought was a few frames of something rounder than anything
+        // round in the system.
         //
         // With the dynamic curve off, the card is simply the shape of the window it grows into for its
         // whole life: no rounding out, and no transition to follow.
-        int startRadius = _s.DynamicCorner ? startSize / 2 : targetRadius;
+        int startRadius = CardRadius(startSize, _s.DynamicCorner, targetRadius);
 
         // The panel window is created on the animation thread, not here. This thread only asks for
         // it and gets straight on with the next event; if creation fails, Panel.Failed is set and

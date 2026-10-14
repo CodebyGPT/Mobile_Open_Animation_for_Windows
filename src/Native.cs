@@ -323,8 +323,9 @@ internal static class Native
     [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
-    /// <summary>Rounds a window off, which is how a card is made to end as a disc. The region is the
-    /// system's once it is set, so it is not deleted here. See <see cref="AdsCard" />.</summary>
+    /// <summary>Rounds a window off, which is how the advertisement's card wears the corner of the window it
+    /// took over. The region is the system's once it is set, so it is not deleted here. See
+    /// <see cref="AdsCard" />.</summary>
     [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b,
         int ellipseW, int ellipseH);
     [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, bool redraw);
