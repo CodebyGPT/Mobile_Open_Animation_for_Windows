@@ -109,7 +109,7 @@ internal sealed class Watcher : IDisposable
             // destroy event there is - twenty thousand of them in a single session's log - and building
             // the string in order to throw it away would be the most expensive thing this program does per
             // event.
-            if (Log.On) Log.Write($"destroy: hwnd={hwnd} was never shown, so it gets no closing animation");
+            if (Log.On) Log.Write($"destroy: hwnd={hwnd} has no opening record, so it gets no closing animation");
             return;
         }
 
@@ -360,8 +360,14 @@ internal sealed class Watcher : IDisposable
             return;
         }
 
-        // Not consumed here: the window may still be destroyed afterwards, and the entry is also what
-        // the destroy path uses to recognise this window as one of ours.
+        // Consumed here, because this is where the window's close is decided. A destroy event can follow
+        // the hide for the same window, and Explorer raises both: the hide at once, the destroy about
+        // 290 ms later, which is longer than the close animation itself. The in-flight check in
+        // Animator.OnWindowClosed has therefore already forgotten the hide by the time the destroy
+        // arrives, and the close played twice. Consumed before the call rather than after, because the
+        // animator may still refuse it, and a record left behind would be permission for exactly the
+        // duplicate this prevents.
+        _accepted.Remove(hwnd);
         Log.Write($"hidden and not minimized: hwnd={hwnd} showCmd={showCmd}; treating it as a close");
         _onClosed(info);
     }
