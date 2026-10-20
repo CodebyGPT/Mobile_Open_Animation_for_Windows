@@ -1743,44 +1743,21 @@ internal sealed class Panel
         // few things in the card that is measured in pixels rather than derived from the card's size.
         _borderWidthPx = Math.Max(1f, BorderWidthLogical * iconDpi / 96f);
 
-        if (_iconBitmap is not null && _iconMaxPx > 0)
-        {
-            try
-            {
-                var scaled = new Bitmap(_iconMaxPx, _iconMaxPx,
-                                        System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                using (var gs = Graphics.FromImage(scaled))
-                {
-                    gs.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    gs.DrawImage(_iconBitmap, new Rectangle(0, 0, _iconMaxPx, _iconMaxPx));
-                }
-                _iconDraw = scaled;
-            }
-            catch { _iconDraw = null; }   // the unscaled icon is still usable
-        }
+        // The icon is scaled once per executable and size, in a cache shared by every panel: a high quality
+        // reduction of a 256 pixel icon to the size it is drawn at measured about 15 ms here, and it used to be
+        // paid on every animation. See CachedIconDraw.
+        if (!string.IsNullOrEmpty(target.ExePath)) _iconDraw = CachedIconDraw(target.ExePath, _iconMaxPx);
 
-        // WS_EX_TOPMOST is in the creation flags rather than left to the SetWindowPos below, and that is the
-        // one thing this window was getting wrong: a window that is not visible yet does not always take the
-        // topmost band from SetWindowPos, and the panel is created hidden and shown a line later. Measured on
-        // the machine this was reported from, every panel of every animation logged "shown: topmost=False",
-        // while the advertisement's card - which is created with this flag and no call at all (AdsCard.Make) -
-        // logged topmost. A card that is not in the band cannot be above the window it is covering, and for a
-        // closing animation there is nothing else to fall back on.
-        uint ex = Native.WS_EX_TOPMOST | Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW |
-                  Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT;
-        _hwnd = Native.CreateWindowExW(ex, ClassName, "", Native.WS_POPUP,
-                                       anchorX, anchorY, startSize, startSize,
-                                       IntPtr.Zero, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
-        if (_hwnd == IntPtr.Zero) { Failed = true; return false; }
-        // Kept as well as the flag: the flag says what the window is, and this is what puts it at the top of
-        // the band it is in - which is the order the band is stacked in, and which anything that raises the
-        // window it covers can take from underneath it. See Present, which takes it back for every frame that
-        // moves the card.
-        Native.SetWindowPos(_hwnd, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0,
-                            0x0001 | 0x0002 | 0x0010);  // NOSIZE | NOMOVE | NOACTIVATE
-        // UpdateLayeredWindow only updates content: it does not make the window visible.
-        // This is the line the Windhawk mod has (ShowWindow(slot->splash, SW_SHOWNOACTIVATE))
-        // and exactly the one this reimplementation was missing.
+        // The window is made by EnsureWindow, which reuses one the animation thread has kept hidden since the
+        // last animation. Creating one of these costs tens of milliseconds on a machine with a slow window
+        // manager - measured at 40-70 ms for a plain popup on the one this was reported from - and that cost
+        // is the whole of the blank between a window disappearing and its card appearing.
+        if (!EnsureWindow()) return false;
+        // Shown, not moved: the window's position and size are set by the UpdateLayeredWindow in Show below,
+        // which is the same call that hands over the content. Asking SetWindowPos for the same rectangle first
+        // was a second window-manager round trip on the critical path - measured at about 26 ms on the machine
+        // this was reported from - and it asked for a frame nobody ever saw, because the panel is transparent
+        // until Show fills it. A reused panel is hidden here and shown again; it keeps its topmost band.
         Native.ShowWindow(_hwnd, Native.SW_SHOWNOACTIVATE);
         // The topmost bit is said out loud because the closing animation depends on it and has nothing else to
         // fall back on: a panel that is not in the topmost band is a card that the window it is standing in for
@@ -1795,23 +1772,112 @@ internal sealed class Panel
         return true;
     }
 
-    public void Destroy()
+    /// <summary>
+    /// Makes sure this panel has a window, and says whether it does. A panel that has one keeps it: the
+    /// animation thread hides panels instead of destroying them and hands the same window to the next
+    /// animation, because creating one is the most expensive thing in the path that shows a closing card.
+    ///
+    /// The creation flags are the ones the panel has always had, and they are applied here rather than in
+    /// Create because a window's extended style cannot be added after creation: WS_EX_LAYERED is what
+    /// UpdateLayeredWindow requires, WS_EX_TOPMOST is where the card has to be, and the rest keep it off
+    /// the taskbar and out of the way of the window it covers.
+    /// </summary>
+    public bool EnsureWindow()
     {
-        if (_hwnd != IntPtr.Zero) { Native.DestroyWindow(_hwnd); _hwnd = IntPtr.Zero; }
-        // The icon bitmap is shared and cached per executable, so it is deliberately not disposed
-        // here. See CachedIcon.
+        if (_hwnd != IntPtr.Zero) return true;
+        if (!_registered) { Failed = true; return false; }
+        uint ex = Native.WS_EX_TOPMOST | Native.WS_EX_LAYERED | Native.WS_EX_TOOLWINDOW |
+                  Native.WS_EX_NOACTIVATE | Native.WS_EX_TRANSPARENT;
+        _hwnd = Native.CreateWindowExW(ex, ClassName, "", Native.WS_POPUP,
+                                       0, 0, 144, 144,
+                                       IntPtr.Zero, IntPtr.Zero, Native.GetModuleHandleW(null), IntPtr.Zero);
+        if (_hwnd == IntPtr.Zero) { Failed = true; return false; }
+        // Kept as well as the flag: the flag says what the window is, and this is what puts it at the top of
+        // the band it is in - which is the order the band is stacked in, and which anything that raises the
+        // window it covers can take from underneath it. See Present, which takes it back for every frame that
+        // moves the card.
+        Native.SetWindowPos(_hwnd, (IntPtr)(-1) /* HWND_TOPMOST */, 0, 0, 0, 0,
+                            0x0001 | 0x0002 | 0x0010);  // NOSIZE | NOMOVE | NOACTIVATE
+        return true;
+    }
+
+    /// <summary>
+    /// Puts this panel away between animations: hidden, its surface freed and everything that belonged to the
+    /// animation just finished forgotten. The window itself is kept, which is the point - the next animation
+    /// gets it from AnimationThread's spare list instead of paying for a creation.
+    /// </summary>
+    public void HideForReuse()
+    {
+        if (_hwnd != IntPtr.Zero) Native.ShowWindow(_hwnd, Native.SW_HIDE);
+        Reset();
+    }
+
+    /// <summary>What a finished animation leaves behind that must not reach the next one.</summary>
+    private void Reset()
+    {
+        // Both icon bitmaps are shared and cached per executable, so neither is disposed here. See CachedIcon
+        // and CachedIconDraw.
         _iconBitmap = null;
-        _iconDraw?.Dispose();
         _iconDraw = null;
         _bgBrush?.Dispose(); _bgBrush = null;
         _borderPen?.Dispose(); _borderPen = null;
         ReleaseSurface();
+        _drawnX = _drawnY = _drawnW = _drawnH = _drawnRadius = 0;
+        _shownX = int.MinValue; _shownY = int.MinValue; _shownW = _shownH = 0;
+        _raiseFailed = false;
+        Failed = false;
+    }
+
+    public void Destroy()
+    {
+        if (_hwnd != IntPtr.Zero) { Native.DestroyWindow(_hwnd); _hwnd = IntPtr.Zero; }
+        Reset();
     }
 
     // Reading an icon out of the executable on disk and converting it is work that must not happen per
     // frame: one bitmap per executable the user opens windows from, not one per animation, and immutable
     // once made.
     private static readonly Dictionary<string, Bitmap?> IconCache = new();
+
+    /// <summary>
+    /// The scaled icon, cached per executable and size. It is the same work the panel used to do for itself at
+    /// the start of every animation - a 256 pixel icon reduced to 128 logical pixels at the display's scale -
+    /// and on this machine that cost about 15 ms of the blank before a card appears. The bitmaps here are
+    /// shared and immutable, so a panel must not dispose the one it is handed.
+    /// </summary>
+    private static readonly Dictionary<(string Path, int Size), Bitmap?> IconDrawCache = new();
+
+    private static Bitmap? CachedIconDraw(string exePath, int size)
+    {
+        if (size <= 0) return null;
+        lock (IconDrawCache)
+        {
+            var key = (exePath, size);
+            if (IconDrawCache.TryGetValue(key, out var cached)) return cached;
+
+            Bitmap? scaled = null;
+            Bitmap? source = CachedIcon(exePath);
+            if (source is not null)
+            {
+                try
+                {
+                    scaled = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    using (var gs = Graphics.FromImage(scaled))
+                    {
+                        gs.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        gs.DrawImage(source, new Rectangle(0, 0, size, size));
+                    }
+                }
+                catch { scaled = null; }   // the unscaled icon is still usable
+            }
+
+            // Thirty-two entries at a quarter of a megabyte or less each; the same bound and reasoning as the
+            // original icon cache above.
+            if (IconDrawCache.Count > 32) IconDrawCache.Clear();
+            IconDrawCache[key] = scaled;
+            return scaled;
+        }
+    }
 
     /// <summary>
     /// The application's icon as a bitmap, from the cache when it has been needed before.

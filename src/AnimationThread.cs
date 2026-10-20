@@ -112,6 +112,22 @@ internal sealed class AnimationThread
 
     private readonly object _gate = new();
     private readonly List<Item> _items = new();
+
+    /// <summary>
+    /// Panels that have been used and are hidden, waiting to be used again.
+    ///
+    /// Creating a panel's window costs tens of milliseconds on a slow window manager - measured at 40-70 ms
+    /// here, against about 4 ms to draw the first frame into it - and that cost is the blank the eye sees
+    /// between a window disappearing and its card appearing. So a finished panel is hidden and kept rather
+    /// than destroyed, and the next animation takes it from here. Three, because that is the most animations
+    /// the animator allows in flight; each idle panel is an empty window with no surface, so the cost is a
+    /// handle and a few kilobytes rather than a bitmap.
+    /// </summary>
+    private readonly List<Panel> _spare = new();
+
+    /// <summary>Set when a spare could not be made, so an idle loop does not keep retrying a broken class.</summary>
+    private bool _spareFailed;
+
     private readonly ManualResetEventSlim _wake = new(false);
     private Thread? _thread;
     private volatile bool _stop;
@@ -199,9 +215,14 @@ internal sealed class AnimationThread
     public Panel Attach(WindowInfo target, int startSize, int startRadius, int anchorX, int anchorY,
                         int finalX, int finalY, int finalSize, FirstFrame? first = null)
     {
-        var panel = new Panel();
+        Panel panel;
         lock (_gate)
         {
+            // A panel left by the last animation if there is one; otherwise a new panel, whose window Create
+            // will make on this thread.
+            int n = _spare.Count;
+            panel = n > 0 ? _spare[n - 1] : new Panel();
+            if (n > 0) _spare.RemoveAt(n - 1);
             _items.Add(new Item
             {
                 Panel = panel,
@@ -342,10 +363,27 @@ internal sealed class AnimationThread
                                           $" GDI+ {it.AaPixels / 1000 / Math.Max(1, it.Frames)} Kpx");
                             }
                         }
-                        it.Panel.Destroy();
-                        lock (_gate) { _items.Remove(it); }
+                        // The window goes into the spare list hidden rather than away: the next animation
+                        // takes it from there and pays no creation. A panel with no window has nothing
+                        // worth keeping.
+                        if (it.Panel.Hwnd != IntPtr.Zero)
+                        {
+                            it.Panel.HideForReuse();
+                            lock (_gate)
+                            {
+                                if (_spare.Count < 3) _spare.Add(it.Panel);
+                                else it.Panel.Destroy();
+                                _items.Remove(it);
+                            }
+                        }
+                        else
+                        {
+                            it.Panel.Destroy();
+                            lock (_gate) { _items.Remove(it); }
+                        }
                         continue;
                     }
+
                     if (!it.Created)
                     {
                         it.Panel.Create(it.Target, it.StartSize, it.StartRadius, it.AnchorX, it.AnchorY,
@@ -431,6 +469,32 @@ internal sealed class AnimationThread
                     iter = 0; drew = 0;
                 }
                 if (_timerRaised) { Native.TimeEndPeriod(1); _timerRaised = false; }
+
+                // Refill the spare list while there is nothing to draw, one panel per pass and then round
+                // again rather than waiting. This is where the pool is built - at startup, and again if a
+                // reuse ever leaves it short - so the creation cost is paid while nothing is happening
+                // instead of in the blank after a window has gone.
+                bool need;
+                lock (_gate) need = !_spareFailed && _spare.Count < 3;
+                if (need)
+                {
+                    var spare = new Panel();
+                    if (spare.EnsureWindow())
+                    {
+                        lock (_gate)
+                        {
+                            if (_spare.Count < 3) _spare.Add(spare);
+                            else spare.Destroy();
+                        }
+                    }
+                    else
+                    {
+                        _spareFailed = true;
+                        spare.Destroy();
+                    }
+                    continue;
+                }
+
                 _wake.Wait();
                 _wake.Reset();
                 continue;
@@ -488,6 +552,8 @@ internal sealed class AnimationThread
         {
             foreach (var it in _items) it.Panel.Destroy();
             _items.Clear();
+            foreach (var panel in _spare) panel.Destroy();
+            _spare.Clear();
         }
     }
 }
