@@ -313,7 +313,7 @@ internal static class Native
     // well as Chinese, which is what gave it away.
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int MessageBoxW(IntPtr h, string text, string caption, uint type);
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern bool Shell_NotifyIconW(uint msg, ref NOTIFYICONDATAW data);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool Shell_NotifyIconW(uint msg, ref NOTIFYICONDATAW data);
 
     /// <summary>
     /// A message number the system picks at run time for a name both sides agree on. Returns 0 when it
@@ -610,6 +610,11 @@ internal static class Native
     [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
     [DllImport("gdi32.dll")] public static extern uint SetBkColor(IntPtr dc, uint color);
     public static readonly IntPtr IDC_ARROW = (IntPtr)32512;
+    /// <summary>IDI_APPLICATION, for the throwaway icon TrayCheck registers and removes at start-up.</summary>
+    public static readonly IntPtr IDI_APPLICATION = (IntPtr)32512;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindowW(string? className, string? windowName);
 
     /// <summary>A static asks its parent for the colours it should paint its text and background in.</summary>
     public const uint WM_CTLCOLORSTATIC = 0x0138;
@@ -1182,9 +1187,25 @@ internal static class Native
     /// The integrity SID's last part, shared by the two callers above. See IntegrityOf for what it means and why
     /// the buffer is sized by asking first.
     /// </summary>
-    private static uint IntegrityRid()
+    private static uint IntegrityRid() => IntegrityRidOf(GetCurrentProcess());
+
+    /// <summary>
+    /// The integrity RID of a process, by id: 0x1000 low, 0x2000 medium, 0x3000 high, 0x4000 system; 0 when it
+    /// cannot be read. This is the number TrayCheck compares against the taskbar's, because UIPI compares these
+    /// levels and not the elevation flag.
+    /// </summary>
+    internal static uint IntegrityRidOf(uint pid)
     {
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out IntPtr token)) return 0;
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero) return 0;
+        try { return IntegrityRidOf(process); }
+        finally { CloseHandle(process); }
+    }
+
+    /// <summary>The same, from an already-open process handle.</summary>
+    internal static uint IntegrityRidOf(IntPtr process)
+    {
+        if (process == IntPtr.Zero || !OpenProcessToken(process, TOKEN_QUERY, out IntPtr token)) return 0;
         try
         {
             GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out uint size);

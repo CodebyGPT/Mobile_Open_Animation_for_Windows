@@ -13,8 +13,9 @@
 //     exit
 //
 // Explorer starts whatever is in that folder at logon, and this needs no rights of its own to be started: a text
-// file, executed by cmd.exe, naming an ordinary executable. The program it starts is the one that asks Windows
-// for elevation - see Program.SelfElevate, and the asInvoker manifest that lets it exist unelevated at all.
+// file, executed by cmd.exe, naming an ordinary executable. The program it starts asks Windows for elevation
+// itself only when it is set to run as administrator - see Program.Run and Program.SelfElevate, and the
+// asInvoker manifest that lets it exist unelevated at all.
 //
 // Every other way of doing this was tried on the machine this was written for, and what each of them did is the
 // reason this is what is left:
@@ -36,11 +37,13 @@
 //   * a .lnk would avoid it too and is the tidier answer, but writing one needs COM. If the flash ever becomes
 //     worth that, it is the change to make; the launcher would be a shortcut to this same executable.
 //
-// The mechanism is the prompt, not a way around it
-// ------------------------------------------------
-// This program cannot hide another process's window unless it holds rights UIPI will accept, so a copy that is
-// not elevated can do nothing at all - it asks and leaves. That is the design, and this file is the half that
-// needs no rights: getting a copy started, unelevated, so that the program itself can ask.
+// Elevation is a choice, not the only way to run
+// ----------------------------------------------
+// At medium integrity in an ordinary folder the tray icon registers, and the windows this program animates are
+// at that level too - so a copy that is set to run as administrator asks for it and leaves if refused, and one
+// that is not runs as the user and asks only when its own tray check finds that it cannot register the icon.
+// See Program.Run and TrayCheck. This file is the half that needs no rights: getting a copy started, unelevated,
+// so that the program itself can decide.
 //
 // No argument is passed, and there used to be one. It marked a copy started at logon so that the program could
 // play a logon advertisement before asking for elevation, which is now gone - so nothing has to tell a logon
@@ -116,7 +119,7 @@ internal static class AutoStart
             "@echo off\r\n" +
             "rem Mobile Open Animation for Windows - starts the program at logon.\r\n" +
             "rem Written by the program's own tray menu. Delete this file to stop it starting at logon.\r\n" +
-            "rem The program asks Windows for administrator rights itself, as it starts.\r\n" +
+            "rem The program asks Windows for administrator rights itself when it is set to.\r\n" +
             "rem If the program it names is gone - moved, renamed, uninstalled - it removes itself and does\r\n" +
             "rem nothing else, so that a launcher cannot outlive what it launches.\r\n" +
             "if not exist " + command + " (\r\n" +

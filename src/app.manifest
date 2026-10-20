@@ -23,14 +23,11 @@
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" /><!-- Win 10 / 11 -->
     </application>
   </compatibility>
-  <!-- asInvoker, deliberately, and it is the opposite of what this file used to ask for. UIPI lets the
-       program touch only windows at its own integrity level or below, so it does need to be elevated - but
-       asking Windows to elevate *before the process starts* means there is no process to do anything
-       unelevated, and the one thing worth doing unelevated is the logon advertisement: that card is the
-       program's own window and needs no rights at all, so it can play before the consent prompt instead of
-       after it. Program.Run therefore starts unelevated, plays the advertisement if this is a logon start,
-       and then asks for elevation itself through the RunAs verb - leaving if the user declines. See
-       Program.SelfElevate. -->
+  <!-- asInvoker, deliberately. Elevation is a choice, not a property of the file: from an ordinary folder at
+       medium integrity the tray icon registers and ordinary application windows are at the same level, so the
+       program runs as the user by default. "Always run as administrator" in the tray menu makes the next start
+       ask for elevation itself through the RunAs verb, and a start that cannot register its tray icon offers
+       the same consent instead of continuing with no interface at all. See Program.Run and TrayCheck. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security><requestedPrivileges>
       <requestedExecutionLevel level="asInvoker" uiAccess="false" />

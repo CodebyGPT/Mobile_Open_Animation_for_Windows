@@ -45,6 +45,19 @@ internal sealed class Settings
     public string StartupHash = "";
 
     /// <summary>
+    /// Whether every start asks Windows for administrator rights.
+    ///
+    /// Off by default: from an ordinary folder at medium integrity the tray icon registers, and the windows
+    /// this program animates are at that level too - so an elevation prompt at every logon is a price for
+    /// rights most runs do not need. On, Program.Run asks before anything else and leaves if the consent is
+    /// refused; that is the behaviour this program used to have unconditionally, kept as a choice.
+    ///
+    /// Read at start-up and nowhere else, so ticking the menu entry does not change the copy that is running -
+    /// "always" is about the next start. An ini that does not mention it is off, like every other switch here.
+    /// </summary>
+    public bool RunAsAdmin = false;
+
+    /// <summary>
     /// Whether a window animates as it closes. On by default, and checked per close rather than at
     /// startup, so turning it off takes effect on the very next window.
     /// </summary>
@@ -241,6 +254,7 @@ internal sealed class Settings
                 // recorded", which is what a settings file written from defaults says, and what the menu reads as
                 // Start with Windows being off.
                 case "startupscripthash": s.StartupHash = val.Trim(); break;
+                case "runasadmin": s.RunAsAdmin = Bool(val, s.RunAsAdmin); break;
                 case "closeanimation": s.CloseAnimation = Bool(val, s.CloseAnimation); break;
                 // Windows 11 only, and a hand-edited ini does not get to overrule that: a square window has no
                 // rounded corner for a dynamic card to arrive at.
@@ -328,6 +342,12 @@ internal sealed class Settings
         sb.AppendLine("; Windows being off. Deleting this line is the same as deleting the launcher: the menu");
         sb.AppendLine("; stops claiming it, and the next click writes a new one over whatever is there.");
         sb.AppendLine($"StartupScriptHash={StartupHash}");
+        sb.AppendLine("; [menu] always run as administrator. Off by default: an ordinary folder at medium");
+        sb.AppendLine("; integrity can register the tray icon, so the consent prompt is asked for only when");
+        sb.AppendLine("; this is on. On, every start asks for elevation before doing anything else, and a");
+        sb.AppendLine("; refused prompt means the program does not start. Read at start-up only, so ticking the");
+        sb.AppendLine("; menu entry takes effect on the next launch.");
+        sb.AppendLine($"RunAsAdmin={(RunAsAdmin ? 1 : 0)}");
         sb.AppendLine($"CloseAnimation={(CloseAnimation ? 1 : 0)}");
         sb.AppendLine("; [menu] dynamic rounding, Windows 11 only. On, an opening card starts as a circle - a 50%");
         sb.AppendLine("; corner - and rounds into the window's own corner on a linear curve; a closing card ends");
@@ -394,6 +414,7 @@ internal sealed class Settings
                   $" dynamicCorner={OnOff(DynamicCorner)} returnToOrigin={OnOff(ReturnToOrigin)}" +
                   $" adsWindow={OnOff(WindowAd)}" +
                   $" startupHash={(StartupHash.Length == 0 ? "none" : StartupHash.Substring(0, 8))}" +
+                  $" runAsAdmin={OnOff(RunAsAdmin)}" +
                   $" adRule=+{AdRuleIncrease.ToString("0.##", CultureInfo.InvariantCulture)}%" +
                   $"/{AdRuleUnit}/reset {AdRuleReset.ToString("0.##", CultureInfo.InvariantCulture)}%" +
                   $" debug={OnOff(DebugMode)} excluded={ExcludedClasses.Count} classes," +
@@ -477,6 +498,10 @@ internal static class Strings
         ["Language"]     = ("Language", "语言"),
         ["OpenConfig"]   = ("Open config directory", "打开配置目录"),
         ["AutoStart"]    = ("Start with Windows", "开机自启"),
+        // The two entries directly under Start with Windows. The first is a setting read at the next launch;
+        // the second acts on this copy and is not stored anywhere.
+        ["RunAsAdmin"]   = ("Always run as administrator", "始终以管理员身份运行"),
+        ["RestartAdmin"] = ("Restart as administrator", "以管理员身份重启本程序"),
         // Four characters, because it sits in a column of toggles where the other three are read at a glance -
         // 回退动画, 动态圆角, 开机自启, in the order the menu lists them - and "窗口关闭动画" was the only one
         // that took a second look. It is the same switch it always was; the ini's key and the log's name for it
@@ -513,6 +538,23 @@ internal static class Strings
         // for them, which is what this machine's Media Foundation will play. The folder's name is compared
         // case-insensitively (see Ads.FindFolder), and the file's name is what the advertisement shows and
         // searches for, which is why it is worth choosing.
+        // The tray preflight's failure dialog. A tray program without a tray icon has no interface, so this is
+        // not advice about a setting: the two answers are "cancel this start and put the program somewhere it
+        // can run" and "run it with the rights that make the icon register". The same two exits the reference
+        // program offers, in this program's own words.
+        ["TrayFailedTitle"] = ("Taskbar notification icon registration failed", "任务栏通知图标注册失败"),
+        ["TrayFailedAsk"]   = ("The notification icon cannot be added to the taskbar",
+                               "无法把通知图标注册到任务栏"),
+        ["TrayFailedAdvice"] =
+            ("This program has no window of its own apart from the tray icon, so a start that cannot register " +
+             "one has no interface at all.\n\n" +
+             "Cancel this start, move the program folder to an ordinary location - the current user's Desktop, " +
+             "or the root of a non-system drive - and try again.\n\n" +
+             "You can also restart the program as administrator, so that the icon can register in the taskbar.",
+             "本程序除托盘图标外没有自己的窗口，因此注册不上图标的这次启动没有任何界面。\n\n" +
+             "建议取消本次启动，把程序所在文件夹移动到常见普通目录（例如当前用户的桌面、非系统盘根目录）后重试。\n\n" +
+             "也可以选择以管理员身份重启本程序，让通知图标能够注册到任务栏。"),
+        ["CancelStart"] = ("Cancel this start", "取消本次启动"),
         ["AdsNeededTitle"] = ("No usable content found", "未找到可用内容"),
         ["AdsNeeded"]    =
             ("Create an \"Ads\" subfolder in this program's configuration directory and put your named video " +

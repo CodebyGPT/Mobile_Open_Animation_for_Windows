@@ -21,7 +21,7 @@ internal static class Program
     internal const int MenuLangEn = 1, MenuLangZh = 2, MenuAutoStart = 3,
                        MenuConfig = 4, MenuAbout = 5, MenuExit = 6, MenuCloseAnim = 7,
                        MenuDynCorner = 8, MenuReturnOrigin = 9, MenuDebugEnable = 10, MenuBlacklist = 11,
-                       MenuSplashAd = 13, MenuAdRule = 14;
+                       MenuSplashAd = 13, MenuAdRule = 14, MenuRunAsAdmin = 15, MenuRestartAdmin = 16;
 
     private static Settings _s = null!;
     internal static Settings S => _s;
@@ -125,8 +125,20 @@ internal static class Program
     /// </summary>
     private static bool OnlyCopyInThisSession()
     {
-        _singleInstance = new Mutex(true, @"Local\MobileOpenAnimationForWindows", out bool first);
-        return first;
+        // A copy started by SelfElevate can arrive before the copy that asked for it has finished leaving - the
+        // restart entry asks while this copy is holding this very mutex - so the continuation waits for it
+        // rather than exiting and leaving no program behind. An ordinary second launch does not wait: it is
+        // refused at once, which is what a double click on a running program should do.
+        int tries = StartedElevated ? 100 : 1;
+        for (int i = 0; i < tries; i++)
+        {
+            _singleInstance = new Mutex(true, @"Local\MobileOpenAnimationForWindows", out bool first);
+            if (first) return true;
+            _singleInstance.Dispose();
+            _singleInstance = null;
+            if (i + 1 < tries) Thread.Sleep(50);
+        }
+        return false;
     }
 
     /// <summary>
@@ -226,27 +238,44 @@ internal static class Program
                   $"(this copy's command line is " +
                   $"{string.Join(" ", Environment.GetCommandLineArgs().Skip(1))})");
 
-        // The first thing this program does about rights is ask for them, and the asking is the last thing this
-        // copy does: everything else needs the rights the answer is about, so there is nothing to do before it
-        // and no card to play first - there is no logon advertisement any more.
-        //
-        // This copy then finishes. It holds no single-instance mutex, installs no hooks and draws no tray icon:
-        // nothing that has to be unique is done by a copy that is going to leave. That is what keeps the
-        // single-instance rule intact with two processes briefly alive.
-        if (!IsElevated() && !StartedElevated)
+        // "Always run as administrator" is about the next start, so it is honoured here, before anything that
+        // needs the token level. This copy then leaves and the marked continuation does the work; refusing the
+        // consent prompt is refusing the program, so nothing is left running.
+        if (_s.RunAsAdmin && !IsElevated() && !StartedElevated)
         {
             if (!SelfElevate()) return 1;
             return 0;
         }
 
-        // Past the point where asking is possible: either this copy is elevated, or it is the continuation of one
-        // that asked and the answer was no. Nothing is shown for the second - the consent prompt was the
-        // question, and it has been answered - and the log says which of the two this was.
-        if (!IsElevated())
+        // The continuation of a request made before this copy started: the marker is the question that does not
+        // need asking again, and the token is the answer. A copy that carried the marker and is not elevated was
+        // refused, and leaves without a word - the consent prompt was the question and it has been answered.
+        if (!IsElevated() && StartedElevated)
         {
             Log.Write("the request for elevation was refused, so this copy cannot hide other processes' windows; " +
                       "it is leaving");
             return 1;
+        }
+
+        // The ordinary launch: not elevated, not asked to be. The one thing that still has to be true is that
+        // the tray icon can be registered at this level, because a tray program with no tray icon has no
+        // interface at all. A failure is a start that must not continue, and the two ways on are the dialog's.
+        if (!IsElevated())
+        {
+            TrayCheck.State tray = TrayCheck.Run(out string trayWhy);
+            Log.Write($"tray check: {tray}; {trayWhy}");
+            if (tray != TrayCheck.State.Ok)
+            {
+                bool elevate = Native.Ask(Strings.T("TrayFailedTitle"),
+                                          Strings.T("TrayFailedAsk"),
+                                          Strings.T("TrayFailedAdvice") + Environment.NewLine +
+                                          Environment.NewLine + trayWhy,
+                                          Strings.T("RestartAdmin"), Strings.T("CancelStart"));
+                Log.Write($"tray check: the user chose " +
+                          $"{(elevate ? "to restart as administrator" : "to cancel this start")}");
+                if (elevate && SelfElevate()) return 0;
+                return 1;
+            }
         }
 
         // Placed after the elevation decision rather than before it, which is the opposite of what this used to
@@ -631,6 +660,8 @@ internal static class Program
         MenuReturnOrigin => "Return animation",
         MenuSplashAd => "Opening ad",
         MenuAdRule => "Custom opening ad trigger conditions",
+        MenuRunAsAdmin => "Always run as administrator",
+        MenuRestartAdmin => "Restart as administrator",
         MenuDebugEnable => "Debug mode",
         MenuBlacklist => "Blacklist",
         _ => $"unknown ({id})",
@@ -754,6 +785,16 @@ internal static class Program
                 }
                 break;
             }
+            case MenuRunAsAdmin:
+                // Written down and no more: the setting is read at start-up, so the copy that is running keeps
+                // whatever rights it already has. The menu entry says "always" because next time is the point.
+                _s.RunAsAdmin = !_s.RunAsAdmin; _s.Save(); break;
+            case MenuRestartAdmin:
+                // One-shot and deliberately not stored: "do it now", not a setting. The continuation is marked
+                // so it does not ask again, and this copy leaves so the mutex is free for it.
+                if (IsElevated()) break;
+                if (SelfElevate()) _host.RequestExit();
+                break;
             case MenuConfig:
                 // Through the shell's own token like everything else that starts a program for the user: from
                 // this process, which is running as administrator, an Explorer window opened the obvious way is an
@@ -1194,6 +1235,16 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING |
             (Program.AutoStartOn ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuAutoStart, Strings.T("AutoStart"));
+        // And the other half of how the program starts, directly under it. The setting is about the next
+        // launch: clicking it writes the ini and changes nothing about the copy that is running. The restart
+        // entry does act on this run, and exists only while it can - it is asked for while the menu is built,
+        // so an elevated copy hides it, and nothing polls for that.
+        Native.AppendMenuW(menu, Native.MF_STRING |
+            (Program.S.RunAsAdmin ? Native.MF_CHECKED : Native.MF_UNCHECKED),
+            (IntPtr)Program.MenuRunAsAdmin, Strings.T("RunAsAdmin"));
+        if (!Program.IsElevated())
+            Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuRestartAdmin,
+                               Strings.T("RestartAdmin"));
 
         // Under the start-up switch, and only while the opening advertisement is on: this entry is the rule for
         // when a program that has already shown an advertisement may show another, and with the advertisement
