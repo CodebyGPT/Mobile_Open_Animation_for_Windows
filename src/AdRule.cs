@@ -1,9 +1,9 @@
 // When a program that has already shown an advertisement may show another one.
 //
-// The rule is arithmetic: how long it has been since that program's last advertisement, and the three numbers
-// the user sets - the unit of time, how much the chance grows per unit, and what it is reset to when an
-// advertisement plays. It lives in its own file, with no window and no interop in it, so that the arithmetic
-// can be put through every case in probe/adrule without a screen.
+// The rule is arithmetic: how long it has been since that program's window last appeared, and the three numbers
+// the user sets - the unit of time, how much the chance grows per unit, and what it is reset to at each
+// appearance. It lives in its own file, with no window and no interop in it, so that the arithmetic can be put
+// through every case in probe/adrule without a screen.
 //
 // The same file holds the two masked fields the rule's window edits, as functions over text: what a keystroke
 // is allowed to make of them, and whether what is there yet is a number. A field that is not complete is a
@@ -61,7 +61,7 @@ internal static class AdRule
 
     /// <summary>
     /// The chance, in percent, that this program may have another advertisement, from how long it has been since
-    /// its last one.
+    /// its window last appeared. The appearance is the reset: the clock starts again there, at <paramref name="reset" />.
     ///
     /// Whole units only, which is what "every minute add one percent" means: the chance steps rather than
     /// creeping, so the number the window shows is the number in force. The elapsed time is wall clock rather

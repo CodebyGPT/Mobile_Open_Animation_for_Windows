@@ -53,22 +53,19 @@ internal sealed class Settings
     /// <summary>
     /// Dynamic rounding: whether the card's corner animates as the card grows or shrinks.
     ///
-    /// On, an opening card begins as a rounded square - 22 per cent of its own side, the proportion the upstream
-    /// mod uses and the shape of the icon the card grows out of - and squares off into the window's own corner
-    /// as it grows, while a closing card goes the other way and ends at the same rounded square. Off, the card
-    /// keeps the corner the window itself has for the whole of its life: square on Windows 10, eight pixels on
-    /// Windows 11, so the shape never changes and only its size does.
+    /// Windows 11 only, and off by default. On, the small end of the card - where an opening card starts and
+    /// where a closing card ends - is a 50 per cent corner, a circle, and it rounds out into the window's own
+    /// corner as the card grows. The interpolation is linear in time rather than on the card's Material curve,
+    /// so the change is spread across the whole animation instead of being mostly over in its first third.
     ///
-    /// It was a circle at the start once, and that is a shape nothing in Windows has; see Animator for why it is
-    /// not any more.
+    /// Off - the default on every version - the card keeps the corner the window itself has for the whole of
+    /// its life: square on Windows 10, eight pixels on Windows 11.
     ///
-    /// The default follows the shape the card settles into, which is what makes it differ by version: on for
-    /// Windows 11, whose windows have an eight pixel round corner, so the card arrives at a shape that is
-    /// already rounded; off for Windows 10, whose windows are square, where the same animation would land on
-    /// a square corner - a larger change to look at than a default should be making on its own. An ini that
-    /// does not mention this key takes that default, so the usual "missing means off" does not apply here.
+    /// Windows 10 is not a default but a refusal: the entry is not on the menu there, and Load treats the key in
+    /// an ini as absent. A square window whose card turns into a circle is a second shape changing beside the
+    /// one the eye is following; a week of using it decided that looks wrong rather than dynamic.
     /// </summary>
-    public bool DynamicCorner = Native.IsWindows11;
+    public bool DynamicCorner = false;
 
     /// <summary>
     /// Whether a window that was opened from a click on the desktop or the taskbar closes back towards the
@@ -106,10 +103,12 @@ internal sealed class Settings
     // ---- the advertisement's own rule ---------------------------------------------------
     //
     // When a program that has already shown an advertisement may show another one. The three parts are what
-    // AdRule.Chance is given, and the rule they make with the defaults is: after an advertisement the chance is
-    // nought, and every minute it grows by one percent - so a program that has been opened again and again for
-    // an hour has a chance of about sixty percent on each window, and one that has just been opened has none.
-    // A program that has never had one always gets it; the rule is about the *next* advertisement.
+    // AdRule.Chance is given: every time a window of the program appears its chance restarts at AdRuleReset, and
+    // it grows by AdRuleIncrease for every AdRuleUnit since that appearance. The defaults are nought, one percent
+    // and one minute - so a program that has been open for five minutes is asked a five percent chance on its
+    // next window, and a program that is opened again and again is asked the same small chance each time instead
+    // of accumulating one between openings. A program that has not appeared before always gets one; the rule is
+    // about the *next* advertisement.
     //
     // The two numbers were typed into a window and are written here; the name is what AdRule.Name makes of the
     // unit, so a hand-edited ini with a word that is not a unit falls back to the default rather than failing.
@@ -243,7 +242,11 @@ internal sealed class Settings
                 // Start with Windows being off.
                 case "startupscripthash": s.StartupHash = val.Trim(); break;
                 case "closeanimation": s.CloseAnimation = Bool(val, s.CloseAnimation); break;
-                case "dynamiccorner": s.DynamicCorner = Bool(val, s.DynamicCorner); break;
+                // Windows 11 only, and a hand-edited ini does not get to overrule that: a square window has no
+                // rounded corner for a dynamic card to arrive at.
+                case "dynamiccorner":
+                    s.DynamicCorner = Native.IsWindows11 && Bool(val, false);
+                    break;
                 case "returntoorigin": s.ReturnToOrigin = Bool(val, s.ReturnToOrigin); break;
                 case "debugmode": s.DebugMode = Bool(val, s.DebugMode); break;
                 case "startsize": s.StartSizePx = Clamp(Int(val, s.StartSizePx), 16, 800); break;
@@ -310,12 +313,13 @@ internal sealed class Settings
         sb.AppendLine("; whether advertisements play silently. On by default, and written by the mute control");
         sb.AppendLine("; on the card, which remembers between showings.");
         sb.AppendLine($"AdsMuted={(AdsMuted ? 1 : 0)}");
-        sb.AppendLine("; [menu] the rule for a program that has already shown an advertisement: the chance of");
-        sb.AppendLine("; another one starts at AdRuleReset when an advertisement plays and grows by");
-        sb.AppendLine("; AdRuleIncrease every AdRuleUnit. The three defaults are nought, one percent and one");
-        sb.AppendLine("; minute - so a program has no chance at the moment of its advertisement and gains one");
-        sb.AppendLine("; percent a minute after it. Both numbers are what that window writes; a program that");
-        sb.AppendLine("; has never had an advertisement always gets one, and the rule is not consulted.");
+        sb.AppendLine("; [menu] the rule for a program that has already shown an advertisement: every time one");
+        sb.AppendLine("; of its windows appears the chance restarts at AdRuleReset, and it grows by AdRuleIncrease");
+        sb.AppendLine("; for every AdRuleUnit since that appearance. The three defaults are nought, one percent and");
+        sb.AppendLine("; one minute - so a program is asked the same small chance on each window it opens,");
+        sb.AppendLine("; rather than one that has been climbing since its last advertisement. Both numbers are");
+        sb.AppendLine("; what that window writes; a program that has not appeared before always gets one, and");
+        sb.AppendLine("; the rule is not consulted.");
         sb.AppendLine($"AdRuleUnit={AdRuleUnit}");
         sb.AppendLine($"AdRuleIncrease={AdRuleIncrease.ToString("0.##", CultureInfo.InvariantCulture)}");
         sb.AppendLine($"AdRuleReset={AdRuleReset.ToString("0.##", CultureInfo.InvariantCulture)}");
@@ -325,12 +329,11 @@ internal sealed class Settings
         sb.AppendLine("; stops claiming it, and the next click writes a new one over whatever is there.");
         sb.AppendLine($"StartupScriptHash={StartupHash}");
         sb.AppendLine($"CloseAnimation={(CloseAnimation ? 1 : 0)}");
-        sb.AppendLine("; [menu] dynamic rounding. On, an opening card begins as a rounded square, 22% of");
-        sb.AppendLine("; its own side, and squares off into the window's own corner as it grows, and a");
-        sb.AppendLine("; closing card ends at that same rounded square. Off, the card keeps the window's own");
-        sb.AppendLine("; corner from start to finish and only its size changes. Defaults to on for Windows 11");
-        sb.AppendLine("; and off for Windows 10, following the corner it settles into: 11 rounds its windows,");
-        sb.AppendLine("; 10 does not.");
+        sb.AppendLine("; [menu] dynamic rounding, Windows 11 only. On, an opening card starts as a circle - a 50%");
+        sb.AppendLine("; corner - and rounds into the window's own corner on a linear curve; a closing card ends");
+        sb.AppendLine("; at the same circle. Off, the card keeps the window's own corner from start to finish and");
+        sb.AppendLine("; only its size changes. Off by default, and ignored on Windows 10, whose windows are");
+        sb.AppendLine("; square.");
         sb.AppendLine($"DynamicCorner={(DynamicCorner ? 1 : 0)}");
         sb.AppendLine("; [menu] closing animation: shrink back to the square the window was opened from,");
         sb.AppendLine("; instead of to its own centre. Off by default. Only for windows opened from the");
@@ -490,14 +493,14 @@ internal static class Strings
         ["AdsWindow"]    = ("Opening ad", "开屏广告"),
         // The rule window's menu entry, and the window's own title: the same words in both places, because the
         // menu is where the user asked for it and a window with a different name is a second thing to read.
-        ["AdRule"]       = ("Custom ad re-trigger rule", "自定义广告重新触发规则"),
-        // That window, in two lines, and the controls sit inside them: "Every [minute] add [01.00]% chance to
-        // re-trigger the ad" and "After an ad plays, reset the chance to [000]%". The fragments are separate
-        // strings because the controls are between them.
+        ["AdRule"]       = ("Custom opening ad trigger conditions", "自定义开屏广告触发条件"),
+        // That window, in two lines, and the controls sit inside them: "Every [minute] add [01.00]% chance of
+        // another opening ad" and "Each time a window appears, reset the chance to [000]%". The fragments are
+        // separate strings because the controls are between them.
         ["AdRuleEvery"]  = ("Every", "每"),
         ["AdRuleAdd"]    = ("add", "增加"),
-        ["AdRuleChance"] = ("% chance to re-trigger the ad", "%概率重新触发广告"),
-        ["AdRuleAfter"]  = ("After an ad plays, reset the chance to", "触发广告后将概率重置为"),
+        ["AdRuleChance"] = ("% chance of another opening ad", "%概率再次播放开屏广告"),
+        ["AdRuleAfter"]  = ("Each time a window appears, reset the chance to", "每次窗口出现时将概率重置为"),
         ["AdRuleUnitSecond"] = ("second", "每秒"),
         ["AdRuleUnitMinute"] = ("minute", "每分钟"),
         ["AdRuleUnitHour"]   = ("hour", "每小时"),

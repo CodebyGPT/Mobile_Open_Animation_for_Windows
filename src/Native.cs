@@ -867,10 +867,31 @@ internal static class Native
     /// Returns S_OK for every notification, including the ones it does not care about: a dialog told anything
     /// else takes it as a refusal and closes.
     /// </summary>
+    public const uint WM_SETICON = 0x0080;
+    private const int ICON_SMALL = 0, ICON_BIG = 1;
+
+    /// <summary>
+    /// Takes the icon off a dialog's title bar, and leaves the one inside it alone.
+    ///
+    /// A task dialog inherits the executable's icon for its title bar, and both kinds of dialog here already
+    /// carry an icon in the body - the blue information mark, or the program's own icon in the About box. The
+    /// title bar's copy is the same picture twice in one window: the body is where a dialog says what it is
+    /// about, and the strip across the top is a label, not a second announcement. Removing it is two
+    /// WM_SETICONs with nothing in them, sent once the dialog exists; comctl32 does not put it back.
+    /// </summary>
+    public static void ClearTitleIcon(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        SendMessageW(hwnd, WM_SETICON, (IntPtr)ICON_BIG, IntPtr.Zero);
+        SendMessageW(hwnd, WM_SETICON, (IntPtr)ICON_SMALL, IntPtr.Zero);
+    }
+
     private static int Asked(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, IntPtr refData)
     {
-        if (msg == TDN_DIALOG_CONSTRUCTED && refData != IntPtr.Zero)
+        if (msg == TDN_DIALOG_CONSTRUCTED)
         {
+            ClearTitleIcon(hwnd);
+            if (refData == IntPtr.Zero) return 0;
             try
             {
                 var wanted = (TASKDIALOG_BUTTON[])GCHandle.FromIntPtr(refData).Target!;

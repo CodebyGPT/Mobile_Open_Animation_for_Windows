@@ -1,10 +1,9 @@
-// The window that edits the advertisement's re-trigger rule, and the only window in this program with a
-// control that is not a stock one - two fields that are not allowed to hold anything but a number.
+// The window that edits when a program that has already shown an advertisement may show another one.
 //
 // It is a window of its own rather than a dialog box because a message box has no room in it for a drop-down
 // and two text fields: this program has no WinForms, so the controls are Win32 ones made here, the mask is a
 // function over text (AdRule.FixIncrease and AdRule.FixReset), and everything else - the font, the scale, the
-// dark theme, the tab order - is the same machinery the blacklist panel uses, for the same reasons.
+// dark theme, the placement, the tab order - is ToolWindow's, the same machinery the blacklist panel uses.
 //
 // Two decisions worth reading before the code:
 //
@@ -17,8 +16,8 @@
 //
 // The controls, in the order the question reads:
 //
-//     Every [minute v] add [01.00]% chance to re-trigger the ad
-//     After an ad plays, reset the chance to [000]%
+//     Every [minute v] add [01.00]% chance of another opening ad
+//     Each time a window appears, reset the chance to [000]%
 //                                                    [ Reset ]
 //
 // The two fields are EDITs of a fixed width - five characters and three - and the paragraph around them is
@@ -101,7 +100,7 @@ internal static class AdRuleDialog
         // hidden: the size is worked out below, from the text and the font, and a window cannot be asked about
         // either of those before it exists.
         Native.GetCursorPos(out var cursor);
-        var work = WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
+        var work = ToolWindow.WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
 
         _hwnd = Native.CreateWindowExW((uint)Native.WS_EX_TOOLWINDOW, ClassName, Strings.T("AdRule"),
             Style, work.Left, work.Top, 200, 200, IntPtr.Zero, IntPtr.Zero,
@@ -140,18 +139,13 @@ internal static class AdRuleDialog
         Native.SendMessageW(_unit, Native.CB_SETCURSEL, (IntPtr)Index(CurrentUnit()), IntPtr.Zero);
 
         Layout(dpi);
-        Native.DarkMode.Style(_hwnd);
-        Native.DarkMode.Frame(_hwnd);
-        IntPtr background = Native.DarkMode.BackgroundBrush();
-        Native.SetClassBackground(_hwnd, background != IntPtr.Zero ? background
-                                                                  : (IntPtr)(Native.COLOR_WINDOW + 1));
-        foreach (var c in AllControls()) Native.DarkMode.Style(c);
-        FitToWorkArea(dpi, work);
+        ToolWindow.Theme(_hwnd, AllControls());
+        ToolWindow.Centre(_hwnd, work);
 
         Native.ShowWindow(_hwnd, Native.SW_SHOW);
         Native.SetFocus(_increase);
         Log.Write($"ad rule: shown at {dpi} dpi, every {Program.S.AdRuleUnit} " +
-                  $"+{Program.S.AdRuleIncrease}%, reset to {Program.S.AdRuleReset}%");
+                  $"+{Program.S.AdRuleIncrease}%, restarting at {Program.S.AdRuleReset}% on each appearance");
     }
 
     /// <summary>
@@ -161,7 +155,7 @@ internal static class AdRuleDialog
     /// </summary>
     private static void ReFont(uint dpi)
     {
-        IntPtr font = UiFont(dpi, out int line96);
+        IntPtr font = ToolWindow.UiFont(dpi, out int line96, out _, out _, "ad rule");
         if (font == IntPtr.Zero) return;
         _line96 = line96;
         IntPtr old = _font;
@@ -169,45 +163,6 @@ internal static class AdRuleDialog
         foreach (var c in AllControls())
             if (c != IntPtr.Zero) Native.SendMessageW(c, Native.WM_SETFONT, font, (IntPtr)1);
         if (old != IntPtr.Zero) Native.DeleteObject(old);
-    }
-
-    private static IntPtr UiFont(uint dpi, out int line96)
-    {
-        line96 = 0;
-        int system = (int)Native.GetDpiForSystem();
-        if (system <= 0) system = 96;
-        try
-        {
-            using var ui = System.Drawing.SystemFonts.MessageBoxFont;
-            double points = ui.SizeInPoints * dpi / system;
-            IntPtr made = Native.CreateFontW(-(int)Math.Round(points * dpi / 72.0), 0, 0, 0,
-                                             ui.Bold ? 700 : 400, ui.Italic ? 1u : 0u, 0, 0, ui.GdiCharSet,
-                                             0, 0, 0, 0, ui.Name);
-            line96 = LineOf(made, dpi);
-            if (line96 > 0) return made;
-            if (made != IntPtr.Zero) Native.DeleteObject(made);
-        }
-        catch (Exception e)
-        {
-            Log.Write($"ad rule: the system font could not be read ({e.GetType().Name}); asking for one instead");
-        }
-        IntPtr font = Native.CreateFontW(-Native.MulDiv(9, (int)dpi, 72), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0,
-                                         "Segoe UI");
-        line96 = LineOf(font, dpi);
-        return line96 > 0 ? font : IntPtr.Zero;
-    }
-
-    private static int LineOf(IntPtr font, uint dpi)
-    {
-        if (font == IntPtr.Zero) return 0;
-        IntPtr dc = Native.GetDC(IntPtr.Zero);
-        if (dc == IntPtr.Zero) return 0;
-        IntPtr old = Native.SelectObject(dc, font);
-        bool read = Native.GetTextMetricsW(dc, out var tm);
-        if (old != IntPtr.Zero) Native.SelectObject(dc, old);
-        Native.ReleaseDC(IntPtr.Zero, dc);
-        int px = read ? tm.Height + tm.ExternalLeading : 0;
-        return px <= 0 ? 0 : Native.MulDiv(px, 96, (int)dpi);
     }
 
     /// <summary>
@@ -281,31 +236,6 @@ internal static class AdRuleDialog
         return read ? size.Cx : 0;
     }
 
-    /// <summary>
-    /// Keeps the window inside the work area of the monitor it was made on: a window whose title bar is off the
-    /// top of the screen cannot be moved, and the two lines it shows are not worth that.
-    /// </summary>
-    private static void FitToWorkArea(uint dpi, RECT work)
-    {
-        Native.GetWindowRect(_hwnd, out var r);
-        int w = Math.Min(r.Right - r.Left, work.Right - work.Left);
-        int h = Math.Min(r.Bottom - r.Top, work.Bottom - work.Top);
-        int x = Math.Max(work.Left, Math.Min(work.Left + Native.MulDiv(80, (int)dpi, 96), work.Right - w));
-        int y = Math.Max(work.Top, Math.Min(work.Top + Native.MulDiv(80, (int)dpi, 96), work.Bottom - h));
-        Native.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
-    }
-
-    private static RECT WorkAreaOf(IntPtr monitor)
-    {
-        var info = new Native.MONITORINFO { CbSize = (uint)Marshal.SizeOf<Native.MONITORINFO>() };
-        return Native.GetMonitorInfoW(monitor, ref info) ? info.RcWork : new RECT
-        {
-            Left = 0, Top = 0,
-            Right = Native.GetSystemMetrics(Native.SM_CXSCREEN),
-            Bottom = Native.GetSystemMetrics(Native.SM_CYSCREEN),
-        };
-    }
-
     /// <summary>The four unit names, as the strings table knows them.</summary>
     private static string UnitString(Unit unit) => unit switch
     {
@@ -353,7 +283,7 @@ internal static class AdRuleDialog
         s.AdRuleReset = AdRule.ResetOf(Read(_resetValue), AdRule.DefaultReset);
         s.AdRuleUnit = AdRule.Name(At(Selected(_unit)));
         s.Save();
-        Log.Write($"ad rule: every {s.AdRuleUnit} +{s.AdRuleIncrease}%, reset to {s.AdRuleReset}% " +
+        Log.Write($"ad rule: every {s.AdRuleUnit} +{s.AdRuleIncrease}%, restarting at {s.AdRuleReset}% per appearance " +
                   $"(fields: \"{Read(_increase)}\" and \"{Read(_resetValue)}\")");
     }
 
@@ -382,7 +312,7 @@ internal static class AdRuleDialog
         Native.SendMessageW(_unit, Native.CB_SETCURSEL, (IntPtr)Index(AdRule.DefaultUnit), IntPtr.Zero);
         _fixing = false;
 
-        Log.Write($"ad rule: reset to every {s.AdRuleUnit} +{s.AdRuleIncrease}%, reset to {s.AdRuleReset}%");
+        Log.Write($"ad rule: defaults put back: every {s.AdRuleUnit} +{s.AdRuleIncrease}%, restarting at {s.AdRuleReset}%");
     }
 
     /// <summary>
@@ -434,14 +364,10 @@ internal static class AdRuleDialog
     /// between the controls, Enter on the button that has the focus, Esc - before dispatching anything. False
     /// for every message that is not the window's, which is every message while it is closed.
     /// </summary>
-    public static bool IsDialogMessage(ref MSG msg)
-        => _hwnd != IntPtr.Zero && Native.IsDialogMessageW(_hwnd, ref msg);
+    public static bool IsDialogMessage(ref MSG msg) => ToolWindow.DialogMessage(_hwnd, ref msg);
 
     /// <summary>Destroys the window when the tray host goes, so nothing of this program is left open.</summary>
-    public static void DestroyWithHost()
-    {
-        if (_hwnd != IntPtr.Zero && Native.IsWindow(_hwnd)) Native.DestroyWindow(_hwnd);
-    }
+    public static void DestroyWithHost() => ToolWindow.Destroy(_hwnd);
 
     private static void Forget()
     {
@@ -461,17 +387,7 @@ internal static class AdRuleDialog
     {
         if (_registered) return true;
         _proc = WndProc;
-        var wc = new WNDCLASSEXW
-        {
-            CbSize = (uint)Marshal.SizeOf<WNDCLASSEXW>(),
-            LpfnWndProc = Marshal.GetFunctionPointerForDelegate(_proc),
-            HInstance = Native.GetModuleHandleW(null),
-            HbrBackground = (IntPtr)(Native.COLOR_WINDOW + 1),
-            HCursor = Native.LoadCursorW(IntPtr.Zero, Native.IDC_ARROW),
-            LpszClassName = ClassName,
-        };
-        _registered = Native.RegisterClassExW(ref wc) != 0;
-        if (!_registered) Log.Write("ad rule: RegisterClassExW failed");
+        _registered = ToolWindow.Register(ClassName, _proc, false, "ad rule");
         return _registered;
     }
 
@@ -484,17 +400,14 @@ internal static class AdRuleDialog
                 return IntPtr.Zero;
 
             case Native.WM_CTLCOLORSTATIC:
-            {
-                IntPtr brush = Native.DarkMode.BackgroundBrush();
-                if (brush == IntPtr.Zero) return Native.DefWindowProcW(hwnd, msg, w, l);
-                Native.SetTextColor(w, Native.DarkMode.DarkTextColour);
-                Native.SetBkColor(w, 0x202020);
-                return brush;
-            }
+                return ToolWindow.StaticColour(hwnd, msg, w, l);
 
             case Native.WM_SETTINGCHANGE:
                 if ((l == IntPtr.Zero ? "" : Marshal.PtrToStringUni(l)) == "ImmersiveColorSet")
+                {
                     Native.DarkMode.Apply();
+                    ToolWindow.Theme(hwnd, AllControls());
+                }
                 return IntPtr.Zero;
 
             case Native.WM_DPICHANGED:

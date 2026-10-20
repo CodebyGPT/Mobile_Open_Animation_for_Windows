@@ -331,12 +331,10 @@ internal static class Program
     /// rectangle the card stopped at. Returning a window puts it over that rectangle; returning nothing leaves
     /// the application to be revealed as it always was.
     ///
-    /// One rule decides it: **a program gets one advertisement, ever**. It was written as "a process gets one"
-    /// first, and that is not the same rule - PowerToys' image resizer is one process per showing, so opening
-    /// it twice played the advertisement twice, and its window is not PowerToys' main window either. What the
-    /// rule is about is the program, so the program is what is remembered; see ProgramName. The main window
-    /// gets it for the same reason as before - the first window of a program is its main one - and a dialog,
-    /// a sub-feature or a second copy of the same program is refused, because it is the same program.
+    /// Whether it may play at all is AdMayPlayAgain's answer, and that is about the program rather than the
+    /// process: PowerToys' image resizer is one process per showing, so opening it twice played the advertisement
+    /// twice, and its window is not PowerToys' main window either. The main window is the one that gets it, and a
+    /// dialog, a sub-feature or a second copy of the same program is refused, because it is the same program.
     ///
     /// Windows that never animate - which includes every blacklisted one, since those never reach an animation
     /// at all - are not offered one, because this is only ever called from an animation.
@@ -382,10 +380,8 @@ internal static class Program
             _guard.Release(hwnd);
         };
 
-        // Written down the moment the advertisement is played rather than when it ends, because this is the
-        // moment the rule counts from: "after an advertisement plays the chance is reset" is about having shown
-        // one, and an advertisement the user dismissed at once still counts as having been shown.
-        _adLastShown[program] = DateTime.UtcNow;
+        // The window is covered and the log says what stands in for it. The rule's clock is not reset here: a
+        // window's appearance is what resets it, and that has already happened in AdMayPlayAgain.
         Log.Write($"ads: window advertisement for {program} (pid {pid}) hwnd={hwnd} at " +
                   $"{rect.Left},{rect.Top} {rect.Right - rect.Left}x{rect.Bottom - rect.Top}," +
                   $" muted={muted} radius={radius}");
@@ -393,17 +389,26 @@ internal static class Program
     }
 
     /// <summary>
-    /// Whether this program may have another advertisement now.
+    /// Whether this program may have an advertisement for this window.
     ///
-    /// A program that has never had one always may: the rule is about re-triggering, and a first advertisement
-    /// that could be rolled away would be a feature half the users never see. After that, how long ago it was
-    /// and the rule in the settings decide - see AdRule, where the arithmetic is, and probe/adrule, which puts
-    /// it through every case. Nothing is remembered beyond this run: the map is in memory, so every start gives
-    /// every program its first advertisement again.
+    /// A program that has not been seen before always may: the rule is about re-triggering, and a first
+    /// advertisement that could be rolled away would be a feature half the users never see.
+    ///
+    /// Every window after that is a new starting point. Its appearance resets that program's chance to
+    /// AdRuleReset, and the roll is made against the time since the previous appearance - so a program opened
+    /// every few minutes is asked the same low chance each time, instead of a chance that kept climbing from one
+    /// window to the next until an advertisement played. That climb is what made the programs opened most often
+    /// the ones most likely to show another advertisement. See AdRule.Chance.
+    /// Nothing is remembered beyond this run: the map is in memory, so every start gives every program its first
+    /// advertisement again.
     /// </summary>
     private static bool AdMayPlayAgain(string program)
     {
-        if (!_adLastShown.TryGetValue(program, out var last)) return true;
+        bool seen = _adLastSeen.TryGetValue(program, out var last);
+        // Written before the roll, because the window has appeared either way and this appearance is the next
+        // one's starting point - an advertisement that plays does not get a second reset out of it.
+        _adLastSeen[program] = DateTime.UtcNow;
+        if (!seen) return true;
 
         AdRule.TryParse(_s.AdRuleUnit, out var unit);
         // Wall clock rather than a tick count, which is what makes the "no chance at all" end of the rule
@@ -412,14 +417,14 @@ internal static class Program
         double chance = AdRule.Chance(unit, _s.AdRuleIncrease, _s.AdRuleReset, elapsedMs);
         bool yes = AdRule.SaysYes(chance, _roll.NextDouble());
 
-        Log.Write($"ads: {program} last had an advertisement at {last:HH:mm:ss}, " +
+        Log.Write($"ads: {program} last appeared at {last:HH:mm:ss}, " +
                   $"{elapsedMs / 1000.0:F1}s ago; the chance is now {chance:F2}%, so " +
                   (yes ? "it plays another" : "none this time"));
         return yes;
     }
 
     /// <summary>
-    /// When each program last had an advertisement, which is what the rule counts from.
+    /// When each program's window last appeared, which is the moment its chance restarts from.
     ///
     /// A name rather than a process id, because it is the program the rule is about, and a name that two
     /// processes of one program agree on: ProductName is the field Windows keeps for exactly this and PowerToys'
@@ -431,7 +436,7 @@ internal static class Program
     /// program restarts, so every run gives every program its first advertisement again, and a record that
     /// outlived the run would be a record of everything the user has ever opened.
     /// </summary>
-    private static readonly Dictionary<string, DateTime> _adLastShown = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, DateTime> _adLastSeen = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The one roll of the dice per advertisement decision. See AdRule.SaysYes.</summary>
     private static readonly Random _roll = new();
@@ -625,7 +630,7 @@ internal static class Program
         MenuDynCorner => "Dynamic corner radius",
         MenuReturnOrigin => "Return animation",
         MenuSplashAd => "Opening ad",
-        MenuAdRule => "Custom ad re-trigger rule",
+        MenuAdRule => "Custom opening ad trigger conditions",
         MenuDebugEnable => "Debug mode",
         MenuBlacklist => "Blacklist",
         _ => $"unknown ({id})",
@@ -647,6 +652,11 @@ internal static class Program
                 if (!Native.SystemAnimationsEnabled()) break;
                 _s.CloseAnimation = !_s.CloseAnimation; _s.Save(); break;
             case MenuDynCorner:
+                // Windows 11 only: the card settles into an eight-pixel corner there, and a dynamic corner is
+                // the shape at the other end of that move. On Windows 10 the window is square and the entry is
+                // not on the menu at all; the value is forced off in Settings.Load, so this is the refusal of a
+                // click on a menu that was drawn before the check, not the only check.
+                if (!Native.IsWindows11) break;
                 if (!Native.SystemAnimationsEnabled()) break;
                 _s.DynamicCorner = !_s.DynamicCorner; _s.Save(); break;
             case MenuReturnOrigin:
@@ -1159,9 +1169,13 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING | returnGroup |
             (Program.S.ReturnToOrigin ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuReturnOrigin, Strings.T("ReturnToOrigin"));
-        Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
-            (Program.S.DynamicCorner ? Native.MF_CHECKED : Native.MF_UNCHECKED),
-            (IntPtr)Program.MenuDynCorner, Strings.T("DynamicCorner"));
+        // Windows 11 only, and absent rather than greyed on Windows 10: there it is not a setting that is off,
+        // it is a shape whose windows are square - and an entry that could only ever be a square card turning
+        // into another square card has nothing to offer.
+        if (Native.IsWindows11)
+            Native.AppendMenuW(menu, Native.MF_STRING | animationGroup |
+                (Program.S.DynamicCorner ? Native.MF_CHECKED : Native.MF_UNCHECKED),
+                (IntPtr)Program.MenuDynCorner, Strings.T("DynamicCorner"));
 
         // And the opening advertisement, next to the animation switches rather than under a submenu of its own.
         //

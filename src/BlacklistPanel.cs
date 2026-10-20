@@ -282,42 +282,17 @@ internal static class BlacklistPanel
             WindowFor(dpi, cw, ch, out ww, out wh);
         }
 
-        Native.SetWindowPos(_hwnd, IntPtr.Zero,
-                            work.Left + (availW - ww) / 2, work.Top + (availH - wh) / 2, ww, wh,
-                            Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_NOCOPYBITS);
+        ToolWindow.Centre(_hwnd, work, ww, wh);
     }
 
     /// <summary>
-    /// The usable area of a monitor, or of the primary one when there is no monitor to ask about.
-    /// </summary>
-    private static RECT WorkAreaOf(IntPtr monitor)
-    {
-        var info = new Native.MONITORINFO { CbSize = (uint)Marshal.SizeOf<Native.MONITORINFO>() };
-        if (monitor != IntPtr.Zero && Native.GetMonitorInfoW(monitor, ref info)) return info.RcWork;
-        return new RECT { Right = Native.GetSystemMetrics(0), Bottom = Native.GetSystemMetrics(1) };
-    }
-
-    /// <summary>
-    /// The font every control is given, and the one measurement the layout is built from: the line height it
-    /// comes out as.
-    ///
-    /// The face, the weight and the point size come from System.Drawing's own reading of the system metrics -
-    /// SystemFonts.MessageBoxFont - rather than from a struct of this program's. The call behind it is one whose
-    /// layout has changed with Windows and whose failure mode is a font that is not the one asked for; .NET
-    /// already has that right, so this file does not keep a second copy of it. Its answer is a font at the dpi
-    /// the process runs at, which is the system's, and the size is scaled from there to the display this window
-    /// is on - that is the whole of the per-monitor part, and the probe measures both ends of it.
-    ///
-    /// The handle is made here rather than taken from that font, because a handle out of a Font object raises a
-    /// question about who deletes it, and this one is this file's to delete. What the font metrics are is then
-    /// measured off the handle, since a font's own idea of how tall its lines are is not its size.
-    ///
-    /// The fallback is the face and size this file asked for before the font came from the system, for a machine
-    /// where the call throws. Losing the font entirely would lose the layout with it.
+    /// Gives every control the system font for this display, and remembers the line height the layout is built
+    /// from. The font itself is ToolWindow's - the same one the rule window is given, so the two windows cannot
+    /// measure their rows differently.
     /// </summary>
     private static void ReFont(uint dpi)
     {
-        IntPtr font = UiFont(dpi, out int line96);
+        IntPtr font = ToolWindow.UiFont(dpi, out int line96, out _fontFace, out _fontPoints, "blacklist panel");
         if (font == IntPtr.Zero) return;
         _line96 = line96;
         IntPtr old = _font;
@@ -327,63 +302,9 @@ internal static class BlacklistPanel
         if (old != IntPtr.Zero) Native.DeleteObject(old);
     }
 
-    private static IntPtr UiFont(uint dpi, out int line96)
-    {
-        line96 = 0;
-        int system = (int)Native.GetDpiForSystem();
-        if (system <= 0) system = 96;
-
-        try
-        {
-            using var ui = System.Drawing.SystemFonts.MessageBoxFont;
-            // The system's font is expressed in the process's own dpi; this window may be on a display at
-            // another one. Both the size in points and the height in pixels come out of the same arithmetic, so
-            // the font is its size at this display rather than its pixels at another.
-            double points = ui.SizeInPoints * dpi / system;
-            _fontFace = ui.Name;
-            _fontPoints = points;
-            IntPtr made = Native.CreateFontW(-(int)Math.Round(points * dpi / 72.0), 0, 0, 0,
-                                             ui.Bold ? 700 : 400, ui.Italic ? 1u : 0u, 0, 0, ui.GdiCharSet,
-                                             0, 0, 0, 0, _fontFace);
-            line96 = LineOf(made, dpi);
-            if (line96 > 0) return made;
-            if (made != IntPtr.Zero) Native.DeleteObject(made);
-            Log.Write("blacklist panel: the system font made no line height; asking for one instead");
-        }
-        catch (Exception e)
-        {
-            Log.Write($"blacklist panel: the system font could not be read ({e.GetType().Name}); asking for one");
-        }
-
-        _fontFace = "Segoe UI";
-        _fontPoints = 9.0 * dpi / 96;
-        IntPtr font = Native.CreateFontW(-Native.MulDiv(9, (int)dpi, 72), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0,
-                                        _fontFace);
-        line96 = LineOf(font, dpi);
-        return line96 > 0 ? font : IntPtr.Zero;
-    }
-
     /// <summary>The face and the point size the font was made at, for the log and the log only.</summary>
     private static string _fontFace = "";
     private static double _fontPoints;
-
-    /// <summary>
-    /// How tall one line of this font is, in 96 DPI units: the character cell plus the leading the font asks
-    /// for, which together are what a row of text takes. Measured on a screen device context, because what a
-    /// font's metrics are is a question for a device context and there is one of those on every machine.
-    /// </summary>
-    private static int LineOf(IntPtr font, uint dpi)
-    {
-        if (font == IntPtr.Zero) return 0;
-        IntPtr dc = Native.GetDC(IntPtr.Zero);
-        if (dc == IntPtr.Zero) return 0;
-        IntPtr old = Native.SelectObject(dc, font);
-        bool read = Native.GetTextMetricsW(dc, out var tm);
-        if (old != IntPtr.Zero) Native.SelectObject(dc, old);
-        Native.ReleaseDC(IntPtr.Zero, dc);
-        int px = read ? tm.Height + tm.ExternalLeading : 0;
-        return px <= 0 ? 0 : Native.MulDiv(px, 96, (int)dpi);
-    }
 
     /// <summary>
     /// Lays the window out again for the client area it has now, which is what a resize and a move to a monitor
@@ -446,7 +367,7 @@ internal static class BlacklistPanel
         // one the user is looking at. Its work area is what the window has to fit into, and its scale is the
         // one the layout is built at - not the system's, which is only the primary monitor's.
         Native.GetCursorPos(out var cursor);
-        var work = WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
+        var work = ToolWindow.WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
 
         // Created hidden, at the corner of that monitor and square: not one of those four numbers survives, and
         // they are only here because a window has to be created at some size. It is not shown until after
@@ -578,7 +499,7 @@ internal static class BlacklistPanel
     private static void PutBackOnScreen(IntPtr hwnd)
     {
         if (!Native.GetWindowRect(hwnd, out var r)) return;
-        var here = WorkAreaOf(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST));
+        var here = ToolWindow.WorkAreaOf(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST));
         bool onAScreen = r.Right > here.Left && r.Left < here.Right && r.Bottom > here.Top && r.Top < here.Bottom;
         if (onAScreen) return;
 
@@ -586,7 +507,7 @@ internal static class BlacklistPanel
         // that monitor's scale. The same call the panel is opened with, so it comes back in the shape and the
         // place it would have opened in.
         Native.GetCursorPos(out var cursor);
-        var target = WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
+        var target = ToolWindow.WorkAreaOf(Native.MonitorFromPoint(cursor, Native.MONITOR_DEFAULTTONEAREST));
         uint dpi = Native.GetDpiForWindow(hwnd);
         if (dpi == 0) dpi = Native.GetDpiForSystem();
         Log.Write($"blacklist panel: {r.Left},{r.Top} is off every screen now (the display it was on changed); " +
@@ -603,8 +524,7 @@ internal static class BlacklistPanel
     /// handle is not checked with IsWindow: it is cleared in WM_DESTROY, and a message cannot arrive for a
     /// window that is gone without that having happened first.
     /// </summary>
-    public static bool IsDialogMessage(ref MSG msg)
-        => _hwnd != IntPtr.Zero && Native.IsDialogMessageW(_hwnd, ref msg);
+    public static bool IsDialogMessage(ref MSG msg) => ToolWindow.DialogMessage(_hwnd, ref msg);
 
     /// <summary>
     /// Forgets the window and everything that was on it, called where the panel is known to be gone: WM_DESTROY
@@ -871,10 +791,7 @@ internal static class BlacklistPanel
     /// do on the way out either. A program that is killed outright never gets here and does not need to: its
     /// windows go with the process.
     /// </summary>
-    public static void DestroyWithHost()
-    {
-        if (_hwnd != IntPtr.Zero && Native.IsWindow(_hwnd)) Native.DestroyWindow(_hwnd);
-    }
+    public static void DestroyWithHost() => ToolWindow.Destroy(_hwnd);
 
     /// <summary>
     /// Puts the window and every control on it onto the system's theme, and asks for one repaint. Nothing here
@@ -886,23 +803,7 @@ internal static class BlacklistPanel
     /// control covers, and the text colour a static asks its parent for in WM_CTLCOLORSTATIC. On the light
     /// theme both are left exactly as the system had them.
     /// </summary>
-    private static void ApplyTheme(IntPtr hwnd)
-    {
-        Native.DarkMode.Style(hwnd);
-        Native.DarkMode.Frame(hwnd);
-
-        // Set rather than registered: the class is made once, at the first Show, and registering a second
-        // class for the other theme would mean two windows that must never both exist.
-        IntPtr background = Native.DarkMode.BackgroundBrush();
-        Native.SetClassBackground(hwnd, background != IntPtr.Zero ? background
-                                                                 : (IntPtr)(Native.COLOR_WINDOW + 1));
-
-        foreach (var c in AllControls()) Native.DarkMode.Style(c);
-
-        // Erase as well as repaint: the client area is still in the old theme's colours underneath, and a
-        // repaint that does not erase would leave them showing through.
-        Native.InvalidateRect(hwnd, IntPtr.Zero, true);
-    }
+    private static void ApplyTheme(IntPtr hwnd) => ToolWindow.Theme(hwnd, AllControls());
 
     /// <summary>Every handle on the window, in one place: the theme and the font both walk all of them.</summary>
     private static IntPtr[] AllControls() => new[]
@@ -915,21 +816,7 @@ internal static class BlacklistPanel
     {
         if (_registered) return true;
         _proc = WndProc;
-        var wc = new WNDCLASSEXW
-        {
-            CbSize = (uint)Marshal.SizeOf<WNDCLASSEXW>(),
-            // Redraw the whole client area on a resize: this window is full of controls that move and change
-            // size with it, and each of them repaints only itself. Without this the background they left behind
-            // is never painted again, which is the other half of the fragments a resize used to leave.
-            Style = Native.CS_HREDRAW | Native.CS_VREDRAW,
-            LpfnWndProc = Marshal.GetFunctionPointerForDelegate(_proc),
-            HInstance = Native.GetModuleHandleW(null),
-            HbrBackground = (IntPtr)(Native.COLOR_WINDOW + 1),
-            HCursor = Native.LoadCursorW(IntPtr.Zero, Native.IDC_ARROW),
-            LpszClassName = ClassName,
-        };
-        _registered = Native.RegisterClassExW(ref wc) != 0;
-        if (!_registered) Log.Write("blacklist panel: RegisterClassExW failed");
+        _registered = ToolWindow.Register(ClassName, _proc, true, "blacklist panel");
         return _registered;
     }
 
@@ -963,7 +850,7 @@ internal static class BlacklistPanel
                 // another one between two drags of its corner.
                 var mm = Marshal.PtrToStructure<Native.MINMAXINFO>(l);
                 mm.MinTrackSize = new POINT { X = minTrackW, Y = minTrackH };
-                var work = WorkAreaOf(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST));
+                var work = ToolWindow.WorkAreaOf(Native.MonitorFromWindow(hwnd, Native.MONITOR_DEFAULTTONEAREST));
                 mm.MaxTrackSize = new POINT { X = work.Right - work.Left, Y = work.Bottom - work.Top };
                 Marshal.StructureToPtr(mm, l, false);
                 return IntPtr.Zero;
@@ -994,16 +881,7 @@ internal static class BlacklistPanel
                 return IntPtr.Zero;
 
             case Native.WM_CTLCOLORSTATIC:
-            {
-                // A plain static's background and text come from its parent, and on the dark theme there is no
-                // system colour for either. Handing one back is the whole of the work; the control paints
-                // itself with it. On the light theme this declines and the system's own answer stands.
-                IntPtr brush = Native.DarkMode.BackgroundBrush();
-                if (brush == IntPtr.Zero) return Native.DefWindowProcW(hwnd, msg, w, l);
-                Native.SetTextColor(w, Native.DarkMode.DarkTextColour);
-                Native.SetBkColor(w, 0x202020);
-                return brush;
-            }
+                return ToolWindow.StaticColour(hwnd, msg, w, l);
 
             case Native.WM_DPICHANGED:
             {

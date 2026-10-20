@@ -19,7 +19,7 @@
 - **Uses the .NET Framework 4.8 runtime**
 - **Follows Windows settings**
 - **Not hardcoded - any resolution, scaling or monitor layout**
-- **Dynamic corner radius**
+- **Dynamic corner radius (Windows 11)**
 - **Material 3 emphasized curves**
 - **Custom opening ad**
 
@@ -79,7 +79,7 @@ The icon is from ByteDance's official icon library, [ByteDance IconPark](https:/
 - **使用 .NET 4.8 运行时**
 - **遵循 Windows 设置**
 - **不硬编码，适配各种分辨率、缩放与多屏**
-- **支持动态圆角**
+- **支持动态圆角（Windows 11）**
 - **采用 Material 3 Emphasized 曲线**
 - **支持自定义开屏广告**
 

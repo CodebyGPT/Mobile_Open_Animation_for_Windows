@@ -8,9 +8,10 @@
 //     mobile-open-animation.wh.cpp:2799). Apps create their window and then move it -
 //     centre it, restore saved geometry, apply DPI - so a single snapshot is stale by the
 //     time the window is visible.
-//   * the corner radius is interpolated along the same easing curve as the rect
-//     (LerpInt(startRadius, radiusPx, ease), mobile-open-animation.wh.cpp:2800), so the
-//     card starts round and settles into the window's own corner radius.
+//   * the corner radius is interpolated linearly over the same time the rect follows the
+//     Material curve - not along that curve as the mod does (mobile-open-animation.wh.cpp:2800).
+//     On the M3 curve almost the whole corner change happened in the first third of the
+//     animation, which is what made the dynamic corner look like it was barely there.
 
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -240,16 +241,16 @@ internal sealed class Animator
     private const int MaxOrigins = 256;
 
     /// <summary>
-    /// How round the card is when it is the size of the start square, as a percentage of that square's side: the
-    /// proportion the Windhawk mod uses (mobile-open-animation.wh.cpp:2787), where the start rectangle is "a
-    /// square of edge size centred on the anchor, which is the icon itself".
+    /// How round the card is when it is the size of the start square, as a percentage of that square's side: half
+    /// of it, which is a circle - the roundest shape that square can hold.
     ///
     /// It is the one shape constant the two ends of a window's life have to agree on, which is why it is here
     /// and not written twice: the opening animation starts at this radius and the closing animation ends at it,
-    /// so that a window closing is the opening run backwards. A disc - half the square, the roundest shape that
-    /// square can hold - was tried in place of this and taken back out; see OnWindowCreated.
+    /// so that a window closing is the opening run backwards. It was twenty-two per cent - the upstream mod's
+    /// proportion - for a while, and that is only a slightly rounded square: at the size of the start square the
+    /// difference between that and the window's own corner was too small to see.
     /// </summary>
-    private const int StartRadiusPercent = 22;
+    private const int StartRadiusPercent = 50;
 
     /// <summary>
     /// How long the application's window may have been on screen before we hid it, in
@@ -642,11 +643,11 @@ internal sealed class Animator
         int y = (int)Math.Round(fromY + (tgt.Top - fromY) * e);
         int w = (int)Math.Round(a.StartSize + (tw - a.StartSize) * e);
         int h = (int)Math.Round(a.StartSize + (th - a.StartSize) * e);
-        // The corner is interpolated along the card's own curve, which is what the mod does
-        // (mobile-open-animation.wh.cpp:2800) and what makes the two things one movement rather than two
-        // running side by side: the rounding is at its roundest when the card is at its smallest, and it
-        // straightens out in step with everything else.
-        int rad = (int)Math.Round(a.StartRadius + (a.TargetRadius - a.StartRadius) * e);
+        // The corner goes on the time rather than on the card's curve. The curve is what the rect follows, and
+        // on it almost the whole change happened in the first third of the animation; the rounding is a second
+        // thing the eye is following, so it is spread evenly over the same interval instead. What it arrives at
+        // is still the window's own corner, at the same moment the rect arrives at the window.
+        int rad = (int)Math.Round(a.StartRadius + (a.TargetRadius - a.StartRadius) * t);
         // Handed over rather than merely asked for, when the panel is not up yet: the thread draws this one as
         // part of creating the panel, in the iteration it is already in, instead of after it. The frame is
         // asked for as well either way, because the handover loses a race with the thread's own creation step
@@ -879,7 +880,7 @@ internal sealed class Animator
         int dpiReadable = dpi;
         if (dpi < 48 || dpi > 480) dpi = 96;
         // The card shrinks to the size the opening animation starts at, so its corners round out to
-        // meet it: 22% of that size, the same proportion, so that a window closing and a window
+        // meet it: half of that size, the same proportion, so that a window closing and a window
         // opening are each other's reverse rather than merely both round. With the dynamic curve
         // turned off the radius simply stays where the window's own was.
         int endSize = Native.MulDiv(_s.StartSizePx, dpi, 96);
@@ -1112,18 +1113,13 @@ internal sealed class Animator
         // start size changed with the DPI, and a centre does not move when the thing around it is resized. The
         // work of turning it into a corner is done in RequestGrowFrame, which is also the only thing that cares.
         int targetRadius = Native.IsWindows11 ? Native.MulDiv(8, dpi, 96) : 0;
-        // Where the card starts from in shape, and the mod's proportion rather than a disc: 22 per cent of the
-        // side of the square it begins as.
+        // Where the card starts from in shape: half the square, a circle - the roundest shape it can hold.
         //
-        // Half the square - the roundest shape that square can hold, so the card arrives as a circle and squares
-        // off as it grows - was tried here and taken back out. Two things were wrong with it. A circle is not a
-        // shape anything in Windows has, so the first frames of every animation were a shape the user has never
-        // seen in this system, and the mod itself never had one: its start rectangle is centred on the icon, and
-        // what grows is meant to be the icon. And the whole of the difference is visible only while the card is
-        // small, because the radius it is interpolating *to* is the window's own - eight pixels at 96 DPI on
-        // Windows 11, nothing at all on Windows 10 - so the shape spends most of the animation already near the
-        // corner it will end on, and what the circle bought was a few frames of something rounder than anything
-        // round in the system.
+        // Twenty-two per cent, the upstream mod's proportion, was used here for a while and looked like almost
+        // nothing: at the size of the start square a slightly rounded corner is indistinguishable from the
+        // window's own, so switching the feature on changed a few pixels. A circle is the shape the card can
+        // actually be seen to leave from, and the linear radius in RequestGrowFrame gives it the whole animation
+        // to become the window's corner rather than the first third of it.
         //
         // With the dynamic curve off, the card is simply the shape of the window it grows into for its
         // whole life: no rounding out, and no transition to follow.
@@ -1271,15 +1267,11 @@ internal sealed class Animator
                 // animation, which straightens them as the card grows. This was missing: the closing
                 // panel kept whatever corner the window's own had for its whole life, so a window
                 // closing looked different from the same window opening.
-                //
-                // On the card's own curve, as the opening one is: the reverse of Material 3, the same curve
-                // the shrink is on, so the rounding is part of one movement rather than a second one beside
-                // it. It had a linear curve finishing at seventy per cent for one revision, so that the
-                // rounded shape would be settled before the fade began; that was given up for the unity, and
-                // the trade it makes is worth knowing about - the corner now does most of its rounding in the
-                // last fifth of the time, which is where the fade starts too, so if it ever looks like the
-                // corner is arriving late, this is the line that decided it.
-                int crad = (int)Math.Round(a.TargetRadius + (a.EndRadius - a.TargetRadius) * e);
+                // On the time, not on the card's curve: the rect follows Material 3 and the corner is a
+                // second shape the eye is following, so it changes evenly from the window's corner to the
+                // circle the opening animation started from. On the curve it was almost finished in the
+                // first third, which is what made a dynamic corner look like a static one.
+                int crad = (int)Math.Round(a.TargetRadius + (a.EndRadius - a.TargetRadius) * t);
                 // Opacity holds until the last part of the shrink, then goes quickly. Fading linearly
                 // from the first frame did two wrong things: the panel washed out while it was still
                 // large, and it reached the end still visibly solid and then vanished. Note that the

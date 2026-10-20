@@ -114,8 +114,13 @@ internal static class AboutDialog
         // opened should be what was clicked.
         if (msg == Native.TDN_HYPERLINK_CLICKED) Open(Marshal.PtrToStringUni(lParam) ?? "");
         // Sent once the box and its controls are both built. The handle is kept so that a second ask for About
-        // can bring this box forward rather than building another; see Show.
-        else if (msg == Native.TDN_DIALOG_CONSTRUCTED) _dlg = hwnd;
+        // can bring this box forward rather than building another; see Show. The title bar's icon goes here:
+        // the box already carries the same icon in its body, and two copies of it in one window is one too many.
+        else if (msg == Native.TDN_DIALOG_CONSTRUCTED)
+        {
+            _dlg = hwnd;
+            Native.ClearTitleIcon(hwnd);
+        }
         return 0;   // S_OK
     }
 
