@@ -551,7 +551,9 @@ internal static class Strings
              "You can also restart the program as administrator, so that the icon can register in the taskbar.",
              "建议取消本次启动，将程序移动到常见普通目录（例如当前用户的桌面、非系统盘根目录）后重试。\n\n" +
              "也可以选择以管理员身份重启本程序，让通知图标能够注册到任务栏。"),
-        ["CancelStart"] = ("Exit", "退出"),
+        // The exit button's label carries the seconds left, so it is a format string rather than a word: the
+        // dialog rewrites it every tick. See TrayFailureDialog, which is what makes the countdown possible.
+        ["TrayExitCountdown"] = ("Exit ({0}s)", "退出（{0}s）"),
         ["AdsNeededTitle"] = ("No usable content found", "未找到可用内容"),
         ["AdsNeeded"]    =
             ("Create an \"Ads\" subfolder in this program's configuration directory and put your named video " +

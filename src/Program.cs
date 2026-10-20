@@ -266,11 +266,7 @@ internal static class Program
             Log.Write($"tray check: {tray}; {trayWhy}");
             if (tray != TrayCheck.State.Ok)
             {
-                bool elevate = Native.Ask(Strings.T("TrayFailedTitle"),
-                                          Strings.T("TrayFailedAsk"),
-                                          Strings.T("TrayFailedAdvice") + Environment.NewLine +
-                                          Environment.NewLine + trayWhy,
-                                          Strings.T("RestartAdmin"), Strings.T("CancelStart"), error: true);
+                bool elevate = TrayFailureDialog.Show(trayWhy);
                 Log.Write($"tray check: the user chose " +
                           $"{(elevate ? "to restart as administrator" : "to cancel this start")}");
                 if (elevate && SelfElevate()) return 0;

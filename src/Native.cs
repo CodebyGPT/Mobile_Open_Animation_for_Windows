@@ -612,6 +612,8 @@ internal static class Native
     public static readonly IntPtr IDC_ARROW = (IntPtr)32512;
     /// <summary>IDI_APPLICATION, for the throwaway icon TrayCheck registers and removes at start-up.</summary>
     public static readonly IntPtr IDI_APPLICATION = (IntPtr)32512;
+    /// <summary>IDI_ERROR: the system's red cross, which the tray failure dialog shows in its body.</summary>
+    public static readonly IntPtr IDI_ERROR = (IntPtr)32513;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr FindWindowW(string? className, string? windowName);
@@ -642,6 +644,14 @@ internal static class Native
     /// </summary>
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
     public static extern bool GetTextExtentPoint32W(IntPtr dc, string text, int count, out SIZE size);
+
+    /// <summary>
+    /// Measures (DT_CALCRECT) or draws text in a rectangle. The tray failure dialog uses it to ask how tall its
+    /// wrapped body will be, which is the only way to size a window around a paragraph rather than around a
+    /// guess at how many lines a sentence takes in another language.
+    /// </summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int DrawTextW(IntPtr dc, string text, int count, ref RECT rect, uint flags);
 
     // ---- the About box: comctl32's task dialog, whose frame, icon and links are all the system's ------------
     //
@@ -712,9 +722,6 @@ internal static class Native
     /// </summary>
     public static readonly IntPtr TD_INFORMATION_ICON = (IntPtr)0xFFFD;
 
-    /// <summary>TD_ERROR_ICON: the red cross, for a question whose answer is that something has failed.</summary>
-    public static readonly IntPtr TD_ERROR_ICON = (IntPtr)0xFFFE;
-
     /// <summary>TDF_USE_HICON_MAIN: the main icon field is a handle this caller owns, not a resource value.</summary>
     public const uint TDF_USE_HICON_MAIN = 0x0002;
 
@@ -781,12 +788,8 @@ internal static class Native
     ///
     /// Anything that is not the first button - the dialog dismissed with Esc or its X, or a dialog that could not
     /// be shown at all - is the second answer. The answer that has to be guessed at is the one that does nothing.
-    ///
-    /// <paramref name="error" /> chooses the body icon: the blue information mark by default, the red cross when
-    /// the question is about something that has already failed - the tray check is the caller that needs it.
     /// </summary>
-    public static bool Ask(string caption, string question, string advice, string yes, string no,
-                           bool error = false)
+    public static bool Ask(string caption, string question, string advice, string yes, string no)
     {
         AskNote = null;
         const int Yes = 100, No = 101;
@@ -820,7 +823,7 @@ internal static class Native
                 // The blue i, which is what this dialog is: a question about the folder, not a fault - unless
                 // the caller says it is one, in which case the red cross is the honest icon. Same
                 // MAKEINTRESOURCE value as the About box's, and no TDF_USE_HICON_MAIN - see TD_INFORMATION_ICON.
-                MainIcon = error ? TD_ERROR_ICON : TD_INFORMATION_ICON,
+                MainIcon = TD_INFORMATION_ICON,
                 PszMainInstruction = question,
                 PszContent = advice,
                 CButtons = (uint)buttons.Length,
@@ -852,7 +855,7 @@ internal static class Native
         // not a lesser question, it is the same one in older clothes, and it is still asked rather than skipped.
         AskNote ??= "the task dialog was not available";
         return MessageBoxW(IntPtr.Zero, $"{question}{Environment.NewLine}{Environment.NewLine}{advice}",
-                           caption, MB_OKCANCEL | (error ? MB_ICONERROR : 0u)) == IDOK;
+                           caption, MB_OKCANCEL) == IDOK;
     }
 
     /// <summary>
@@ -865,8 +868,6 @@ internal static class Native
 
     /// <summary>MB_OKCANCEL: the fallback's two buttons, which answer IDOK and IDCANCEL.</summary>
     public const uint MB_OKCANCEL = 0x00000001;
-    /// <summary>MB_ICONERROR: the fallback's red cross, matching TD_ERROR_ICON above.</summary>
-    public const uint MB_ICONERROR = 0x00000010;
 
     /// <summary>
     /// Reads the dialog's own buttons back once they exist, and writes down any that did not come out as they
