@@ -270,7 +270,7 @@ internal static class Program
                                           Strings.T("TrayFailedAsk"),
                                           Strings.T("TrayFailedAdvice") + Environment.NewLine +
                                           Environment.NewLine + trayWhy,
-                                          Strings.T("RestartAdmin"), Strings.T("CancelStart"));
+                                          Strings.T("RestartAdmin"), Strings.T("CancelStart"), error: true);
                 Log.Write($"tray check: the user chose " +
                           $"{(elevate ? "to restart as administrator" : "to cancel this start")}");
                 if (elevate && SelfElevate()) return 0;
@@ -1229,6 +1229,11 @@ internal sealed class TrayHost
         Native.AppendMenuW(menu, Native.MF_STRING |
             (Program.S.WindowAd ? Native.MF_CHECKED : Native.MF_UNCHECKED),
             (IntPtr)Program.MenuSplashAd, Strings.T("AdsWindow"));
+        // Directly under the switch it belongs to, and only while that switch is on: with the advertisement
+        // off there is nothing for this to be a rule about. Rebuilt with the menu on every right click, so it
+        // comes and goes with the switch rather than needing to be told about it.
+        if (Program.S.WindowAd)
+            Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuAdRule, Strings.T("AdRule"));
 
         Native.AppendMenuW(menu, Native.MF_SEPARATOR, IntPtr.Zero, "");
         Native.AppendMenuW(menu, Native.MF_POPUP, lang, Strings.T("Language"));
@@ -1245,13 +1250,6 @@ internal sealed class TrayHost
         if (!Program.IsElevated())
             Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuRestartAdmin,
                                Strings.T("RestartAdmin"));
-
-        // Under the start-up switch, and only while the opening advertisement is on: this entry is the rule for
-        // when a program that has already shown an advertisement may show another, and with the advertisement
-        // switched off there is nothing for it to be a rule about. Rebuilt with the menu on every right click,
-        // so it comes and goes with the switch rather than needing to be told about it.
-        if (Program.S.WindowAd)
-            Native.AppendMenuW(menu, Native.MF_STRING, (IntPtr)Program.MenuAdRule, Strings.T("AdRule"));
 
         // A submenu rather than one more toggle among the animation ones, because what belongs under it is
         // any number of separate diagnostics and none of them is a setting in the sense the others are: an

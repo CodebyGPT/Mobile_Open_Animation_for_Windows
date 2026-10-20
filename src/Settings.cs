@@ -546,15 +546,12 @@ internal static class Strings
         ["TrayFailedAsk"]   = ("The notification icon cannot be added to the taskbar",
                                "无法把通知图标注册到任务栏"),
         ["TrayFailedAdvice"] =
-            ("This program has no window of its own apart from the tray icon, so a start that cannot register " +
-             "one has no interface at all.\n\n" +
-             "Cancel this start, move the program folder to an ordinary location - the current user's Desktop, " +
+            ("Cancel this start, move the program to an ordinary location - the current user's Desktop, " +
              "or the root of a non-system drive - and try again.\n\n" +
              "You can also restart the program as administrator, so that the icon can register in the taskbar.",
-             "本程序除托盘图标外没有自己的窗口，因此注册不上图标的这次启动没有任何界面。\n\n" +
-             "建议取消本次启动，把程序所在文件夹移动到常见普通目录（例如当前用户的桌面、非系统盘根目录）后重试。\n\n" +
+             "建议取消本次启动，将程序移动到常见普通目录（例如当前用户的桌面、非系统盘根目录）后重试。\n\n" +
              "也可以选择以管理员身份重启本程序，让通知图标能够注册到任务栏。"),
-        ["CancelStart"] = ("Cancel this start", "取消本次启动"),
+        ["CancelStart"] = ("Exit", "退出"),
         ["AdsNeededTitle"] = ("No usable content found", "未找到可用内容"),
         ["AdsNeeded"]    =
             ("Create an \"Ads\" subfolder in this program's configuration directory and put your named video " +
@@ -562,16 +559,15 @@ internal static class Strings
              "The video container and codec formats that will play are decided by this machine's system. " +
              "H.264 + AAC in an MP4 is recommended.",
              "请在本程序配置目录中新建“Ads”子目录，并将命名好的视频文件放入该子目录中。\n\n" +
-             "受支持的视频封装和编码格式均由本机系统决定，推荐使用 H.264 + AAC 的 MP4。"),
+             "受支持的视频封装格式和编码格式均由本机系统决定，推荐使用 H.264 + AAC 的 MP4。"),
         // Asked before a start-up launcher is written over one that is already there and is not the file this
         // program wrote - edited, or somebody else's, or written before the ini was reset. Four strings, because
         // the question has two answers of the program's own naming and a message box's two buttons say OK and
         // Cancel and cannot be made to say anything else; see Native.Ask.
         ["AutoStartConflictTitle"] = ("Startup entry conflict", "启动项存在冲突"),
         ["AutoStartConflict"] =
-            ("A start-up script with this name is already in shell:startup, but its contents are not what this " +
-             "program expects. Overwrite it?",
-             "shell:startup 中已存在同名启动脚本，但其内容与预期不符，是否覆盖？"),
+            ("A start-up script with this name is already in shell:startup. Overwrite it?",
+             "shell:startup 中已存在同名启动脚本，是否覆盖？"),
         ["AutoStartOverwrite"] = ("Overwrite (recommended)", "覆盖（推荐）"),
         ["AutoStartCancel"]    = ("Cancel", "取消"),
         ["AdsMute"]      = ("Mute", "静音"),

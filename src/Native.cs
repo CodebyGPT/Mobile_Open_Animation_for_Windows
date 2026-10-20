@@ -712,6 +712,9 @@ internal static class Native
     /// </summary>
     public static readonly IntPtr TD_INFORMATION_ICON = (IntPtr)0xFFFD;
 
+    /// <summary>TD_ERROR_ICON: the red cross, for a question whose answer is that something has failed.</summary>
+    public static readonly IntPtr TD_ERROR_ICON = (IntPtr)0xFFFE;
+
     /// <summary>TDF_USE_HICON_MAIN: the main icon field is a handle this caller owns, not a resource value.</summary>
     public const uint TDF_USE_HICON_MAIN = 0x0002;
 
@@ -777,10 +780,13 @@ internal static class Native
     /// known.
     ///
     /// Anything that is not the first button - the dialog dismissed with Esc or its X, or a dialog that could not
-    /// be shown at all - is the second answer. The one caller is a program about to write a file into the folder
-    /// it was started from, so the answer that has to be guessed at is the one that writes nothing.
+    /// be shown at all - is the second answer. The answer that has to be guessed at is the one that does nothing.
+    ///
+    /// <paramref name="error" /> chooses the body icon: the blue information mark by default, the red cross when
+    /// the question is about something that has already failed - the tray check is the caller that needs it.
     /// </summary>
-    public static bool Ask(string caption, string question, string advice, string yes, string no)
+    public static bool Ask(string caption, string question, string advice, string yes, string no,
+                           bool error = false)
     {
         AskNote = null;
         const int Yes = 100, No = 101;
@@ -811,9 +817,10 @@ internal static class Native
                 DwFlags = TDF_ALLOW_DIALOG_CANCELLATION,
                 DwCommonButtons = 0,                 // the two below are the whole of what it offers
                 PszWindowTitle = caption,
-                // The blue i, which is what this dialog is: a question about the folder, not a fault. Same
+                // The blue i, which is what this dialog is: a question about the folder, not a fault - unless
+                // the caller says it is one, in which case the red cross is the honest icon. Same
                 // MAKEINTRESOURCE value as the About box's, and no TDF_USE_HICON_MAIN - see TD_INFORMATION_ICON.
-                MainIcon = TD_INFORMATION_ICON,
+                MainIcon = error ? TD_ERROR_ICON : TD_INFORMATION_ICON,
                 PszMainInstruction = question,
                 PszContent = advice,
                 CButtons = (uint)buttons.Length,
@@ -845,7 +852,7 @@ internal static class Native
         // not a lesser question, it is the same one in older clothes, and it is still asked rather than skipped.
         AskNote ??= "the task dialog was not available";
         return MessageBoxW(IntPtr.Zero, $"{question}{Environment.NewLine}{Environment.NewLine}{advice}",
-                           caption, MB_OKCANCEL) == IDOK;
+                           caption, MB_OKCANCEL | (error ? MB_ICONERROR : 0u)) == IDOK;
     }
 
     /// <summary>
@@ -858,6 +865,8 @@ internal static class Native
 
     /// <summary>MB_OKCANCEL: the fallback's two buttons, which answer IDOK and IDCANCEL.</summary>
     public const uint MB_OKCANCEL = 0x00000001;
+    /// <summary>MB_ICONERROR: the fallback's red cross, matching TD_ERROR_ICON above.</summary>
+    public const uint MB_ICONERROR = 0x00000010;
 
     /// <summary>
     /// Reads the dialog's own buttons back once they exist, and writes down any that did not come out as they
